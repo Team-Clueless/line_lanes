@@ -84,8 +84,8 @@ void callback(const sensor_msgs::ImageConstPtr &msg_right, const sensor_msgs::Im
         pc_mod.setPointCloud2FieldsByString(1, "xyz");
         sensor_msgs::PointCloud2Iterator<float> x(*point_cloud, "x"), y(*point_cloud, "y"), z(*point_cloud, "z");
 
-        bool px = true;
-        bool py = true;
+
+        // TODO : Deal with the robot being tilted !!!
         for (const auto &point : points) {
             cv::Point3d ray = helper.model_left.projectPixelTo3dRay(point);
             cv::Point3d correct_ray(ray.z, -ray.x, -ray.y);
@@ -93,21 +93,14 @@ void callback(const sensor_msgs::ImageConstPtr &msg_right, const sensor_msgs::Im
             correct_ray *= -helper.height / correct_ray.z;
             *x = correct_ray.x;
             *y = correct_ray.y;
-            *z = correct_ray.y;
+            *z = correct_ray.z;
 
-            if (ray.x < 0) px = false;
-            if (ray.y < 0) py = false;
 
             ++x;
             ++y;
             ++z;
         }
 
-        if (px)
-            ROS_INFO("x is positive!");
-        
-        if (py)
-            ROS_INFO("y is positive!");
         helper.pub_point_cloud.publish(point_cloud);
 
 
