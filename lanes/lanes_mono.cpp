@@ -13,9 +13,10 @@
 #include <tf/transform_listener.h>
 #include <tf/transform_datatypes.h>
 
-// Run `rosrun rqt_reconfigure rqt_reconfigure` go to /camera/lanes to change params for this node.
 #include <dynamic_reconfigure/server.h>
 #include <igvc_bot/LanesConfig.h>
+
+#include <vector>
 
 
 // Objects that the callback needs. Initialized in main().
@@ -91,14 +92,13 @@ void callback(const sensor_msgs::ImageConstPtr &msg_left,
         point_cloud->width = points.size();
         point_cloud->is_bigendian = false;
         point_cloud->is_dense = false;
+
         sensor_msgs::PointCloud2Modifier pc_mod(*point_cloud);
-
         pc_mod.setPointCloud2FieldsByString(1, "xyz"); // Only want to publish spatial data.
+
         sensor_msgs::PointCloud2Iterator<float> x(*point_cloud, "x"), y(*point_cloud, "y"), z(*point_cloud, "z");
-
-
         for (const auto &point : points) {
-            // Ray is a vector that points from the camera to the pixel:
+            // ___________ Ray is a vector that points from the camera to the pixel: __________
             // Its calculation is pretty simple but is easier to use the image_geometry package.
 
             cv::Point3d ray = helper.cameraModel.projectPixelTo3dRay(point);
@@ -118,6 +118,7 @@ void callback(const sensor_msgs::ImageConstPtr &msg_left,
              *
              * What we do is basically scale the ray such that the end touches the ground (we know the lane points are actually on the ground.
              * Then we add those co-ords to the point cloud.
+             * ___________ We are basically checking the coords where the ray intersects the ground ________
             */
 
             if (!ray.y) continue; // For divide by zero (ray.y != 0)
@@ -127,7 +128,7 @@ void callback(const sensor_msgs::ImageConstPtr &msg_left,
             *y = -ray.x;
             *z = -ray.y; // Basically ground_height *z = helper.height
 
-            // Go to next point.
+            // Go to next point in pointcloud.
             ++x;
             ++y;
             ++z;
@@ -144,6 +145,7 @@ void callback(const sensor_msgs::ImageConstPtr &msg_left,
 // Try running `rosrun rqt_reconfigure rqt_reconfigure` while node is running.
 // This also auto loads any params initially set in the param server.
 // The the ros page for 'dynamic_reconfigure'
+//
 void dynamic_reconfigure_callback(const igvc_bot::LanesConfig &config, const uint32_t &level, Helpers &helpers) {
     if (level & 1u << 0u) {
         ROS_INFO("Reconfiguring lower level.");
