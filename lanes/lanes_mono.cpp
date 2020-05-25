@@ -26,6 +26,7 @@ struct Helpers {
 
     cv::Scalar white_lower, white_upper; // HSV range for color white.
 
+    double rect_frac;
     // For cv::erode
     uint8_t erosion_size, erosion_iter;
     cv::Mat erosion_element;
@@ -66,6 +67,10 @@ void callback(const sensor_msgs::ImageConstPtr &msg_left,
 
         // Flood Fill from the top of the mask to remove the sky in gazebo.
         cv::floodFill(raw_mask, cv::Point(raw_mask.cols / 2, 2), cv::Scalar(0));
+
+        // Errors in projection increase as we approach the halfway point of the image:
+        // Apply a mask to remove top 60%
+        raw_mask(cv::Rect(0, 0, raw_mask.cols, (int) (raw_mask.rows * helper.rect_frac))) = 0;
 
         cv::erode(raw_mask, eroded_mask, helper.erosion_element, cv::Point(-1, -1), helper.erosion_iter);
 
@@ -185,6 +190,11 @@ void dynamic_reconfigure_callback(const igvc_bot::LanesConfig &config, const uin
         ROS_INFO("Reconfiguring blur size.");
         helpers.blur_size = 2 * config.blur_size + 1;
     }
+
+    if (level & 1u << 5u) {
+        ROS_INFO("Reconfiuring rect mask");
+        helpers.rect_frac = config.upper_mask_percent / 100.0;
+    }
 }
 
 
@@ -203,6 +213,8 @@ int main(int argc, char **argv) {
 
             (0, 0, 0),
             (180, 40, 255),
+
+            0.6,
 
             2,
             1,
