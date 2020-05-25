@@ -38,7 +38,7 @@ struct Helpers {
 
     // For projecting the image onto the ground.
     image_geometry::PinholeCameraModel cameraModel;
-    float height;
+    tf::TransformListener listener;
 };
 
 
@@ -47,13 +47,18 @@ const char *topic_camera_info = "camera_info";
 const char *topic_masked = "image_masked";
 const char *topic_pointcloud2 = "points2";
 
-const char *ground_frame = "ground";
+// In rviz map/odom seems to be a true horizontal plane located at ground level.
+const char *ground_frame = "odom";
 
 
 void callback(const sensor_msgs::ImageConstPtr &msg_left,
               Helpers &helper) {
 
     try {
+
+        tf::StampedTransform transform;
+        helper.listener.lookupTransform(ground_frame, helper.cameraModel.tfFrame(), ros::Time(0), transform);
+
         cv::Mat hsv, blur, raw_mask, eroded_mask, masked;
 
         cv_bridge::CvImageConstPtr cv_img = cv_bridge::toCvCopy(msg_left, "");
@@ -91,7 +96,7 @@ void callback(const sensor_msgs::ImageConstPtr &msg_left,
         // Initialize the point cloud:
         // See: https://answers.ros.org/question/212383/transformpointcloud-without-pcl/
         sensor_msgs::PointCloud2Ptr point_cloud = boost::make_shared<sensor_msgs::PointCloud2>();
-        point_cloud->header.frame_id = helper.cameraModel.tfFrame();
+        point_cloud->header.frame_id = ground_frame; // helper.cameraModel.tfFrame();
         point_cloud->header.stamp = ros::Time::now();
         point_cloud->height = 1;
         point_cloud->width = points.size();
@@ -101,21 +106,27 @@ void callback(const sensor_msgs::ImageConstPtr &msg_left,
         sensor_msgs::PointCloud2Modifier pc_mod(*point_cloud);
         pc_mod.setPointCloud2FieldsByString(1, "xyz"); // Only want to publish spatial data.
 
+
+        // Change the transform to a more useful form.
+        tf::Quaternion trans_rot = transform.getRotation();
+        cv::Vec3d trans_vec{trans_rot.x(), trans_rot.y(), trans_rot.z()};
+        double trans_sca = trans_rot.w();
+
         sensor_msgs::PointCloud2Iterator<float> x(*point_cloud, "x"), y(*point_cloud, "y"), z(*point_cloud, "z");
         for (const auto &point : points) {
             // ___________ Ray is a vector that points from the camera to the pixel: __________
             // Its calculation is pretty simple but is easier to use the image_geometry package.
-            cv::Point3d ray = helper.cameraModel.projectPixelTo3dRay(point);
-            /* ^ Basically:
-             * cv::Point3d ray;
-             * ray.x = (uv_rect.x - cx() - Tx()) / fx();
-             * ray.y = (uv_rect.y - cy() - Ty()) / fy();
-             * ray.z = 1.0;
+            /* Basically:
+             * cv::Point3d ray_cameraModel_frame;
+             * ray_cameraModel_frame.x = (uv_rect.x - cx() - Tx()) / fx();
+             * ray_cameraModel_frame.y = (uv_rect.y - cy() - Ty()) / fy();
+             * ray_cameraModel_frame.z = 1.0;
              * f is focal length
-             *
              */
+            cv::Point3d ray_cameraModel_frame = helper.cameraModel.projectPixelTo3dRay(point);
+            //^ 3d d=>double.
 
-            /* Note: the ray is not in the same frame as the tf_frame: camera_left
+            /* Note: the ray_cameraModel_frame is not in the same frame as the tf_frame: camera_left
              * Ray frame:
              * x points to the right of the image, y points down, z points inward
              *
@@ -124,23 +135,49 @@ void callback(const sensor_msgs::ImageConstPtr &msg_left,
              *
              * If you look at the camera from above:
              *
-             * ray: x <---(x) y  camera_left: z (.)---> y
+             * ray_cameraModel_frame: x <---(x) y  camera_left: z (.)---> y
              *             |                     |
              *             |                     |
              *             z                     x
              *
-             * What we do is basically scale the ray such that the end touches the ground (we know the lane points are actually on the ground.
+             * What we do is basically scale the ray_cameraModel_frame such that the end touches the ground (we know the lane points are actually on the ground.
              * Then we add those co-ords to the point cloud.
-             * ___________ We are basically checking the coords where the ray intersects the ground ________
+             * ___________ We are basically checking the coords where the ray_cameraModel_frame intersects the ground ________
              */
+            cv::Vec3d ray{ray_cameraModel_frame.z, -ray_cameraModel_frame.x, -ray_cameraModel_frame.y};
 
-            if (!ray.y) continue; // For divide by zero (ray.y != 0)
+            /* NOT REQUIRED:
+            const static cv::Vec3d unit{1, 1, 1};
 
-            // Scaling and changing to camera_left frame:
-            ray *= helper.height / ray.y;
-            *x = ray.z;
-            *y = -ray.x;
-            *z = -ray.y; // Basically ground_height *z = helper.height
+            cv::Vec3d a = unit.cross(ray);
+            const double w_sq = (cv::norm(unit) * cv::norm(ray) + unit.dot(ray));
+            const double fac = sqrt(a[0] * a[0] + a[1] * a[1] + a[2] * a[2] + w_sq);
+            //
+            // https://stackoverflow.com/a/1171995/1515394
+            geometry_msgs::Pose pose;
+            pose.orientation.x = a[0] / fac;
+            pose.orientation.y = a[1] / fac;
+            pose.orientation.z = a[2] / fac;
+            pose.orientation.w = cv::sqrt(w_sq) / fac;
+            */
+
+            // Rotate ray by using the transform.
+            // Kinda black magic on v_p = q * v * q'
+            // https://gamedev.stackexchange.com/a/50545/90578
+            cv::Vec3d ray_p = 2.0 * trans_vec.dot(ray) * trans_vec
+                              + (trans_sca * trans_sca - trans_vec.dot(trans_vec)) * ray
+                              + 2.0f * trans_sca * trans_vec.cross(ray);
+
+            if (ray_p[2] == 0) // TODO: Handle
+                continue;
+
+            // Scale factor for ray so it touches the ground
+            const double scale = transform.getOrigin().z() / ray_p[2];
+
+            // Add ray to camera_left's origin
+            *x = transform.getOrigin().x() - ray_p[0] * scale;
+            *y = transform.getOrigin().y() - ray_p[1] * scale;
+            *z = 0; // transform.getOrigin().z() - ray_p[2] * scale;
 
             // Go to next point in pointcloud.
             ++x;
@@ -230,21 +267,6 @@ int main(int argc, char **argv) {
             topic_camera_info);
     helper.cameraModel.fromCameraInfo(camera_info);
 
-
-    { // For getting the height.
-        tf::TransformListener listener;
-        while (true) {
-            try {
-                tf::StampedTransform transform;
-                listener.lookupTransform(ground_frame, helper.cameraModel.tfFrame(), ros::Time(0), transform);
-                helper.height = transform.getOrigin().z();
-                break;
-            } catch (const std::exception &e) {
-                ROS_WARN("Transform not found, sleeping.");
-                ros::Duration(1).sleep();
-            }
-        }
-    }
 
     // For the dynamic parameter reconfigeration. see the function dynamic_reconfigure_callback
     dynamic_reconfigure::Server<igvc_bot::LanesConfig> server;
