@@ -92,9 +92,12 @@ void callback(const sensor_msgs::ImageConstPtr &msg_left,
         std::vector<cv::Point> points; // All the points which is detected as part of the lane.
         cv::findNonZero(eroded_mask, points);
 
+        // ROS_INFO("%lu", points.size());
+        // If num points suddenly changes: skip this publish?
+        // Should stop the random explosion of completely incorrect points.s
 
         // Initialize the point cloud:
-        // See: https://answers.ros.org/question/212383/transformpointcloud-without-pcl/
+        // See: OOPS_WRONG_LINK ~~~https://answers.ros.org/question/212383/transformpointcloud-without-pcl/~~~
         sensor_msgs::PointCloud2Ptr point_cloud = boost::make_shared<sensor_msgs::PointCloud2>();
         point_cloud->header.frame_id = ground_frame; // helper.cameraModel.tfFrame();
         point_cloud->header.stamp = ros::Time::now();
@@ -184,7 +187,6 @@ void callback(const sensor_msgs::ImageConstPtr &msg_left,
             ++y;
             ++z;
         }
-
         helper.pub_point_cloud.publish(point_cloud);
 
     } catch (std::exception &e) {
