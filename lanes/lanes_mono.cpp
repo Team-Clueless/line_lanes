@@ -61,7 +61,7 @@ void callback(const sensor_msgs::ImageConstPtr &msg_left,
 
         cv::Mat hsv, blur, raw_mask, eroded_mask, masked;
 
-        cv_bridge::CvImageConstPtr cv_img = cv_bridge::toCvCopy(msg_left, "");
+        cv_bridge::CvImageConstPtr cv_img = cv_bridge::toCvCopy(msg_left, "bgr8");
 
 
         cv::cvtColor(cv_img->image, hsv, cv::COLOR_BGR2HSV);
