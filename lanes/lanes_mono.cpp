@@ -62,6 +62,7 @@ void callback(const sensor_msgs::ImageConstPtr &msg_left,
         cv::Mat hsv, blur, raw_mask, eroded_mask, masked;
 
         cv_bridge::CvImageConstPtr cv_img = cv_bridge::toCvCopy(msg_left, "bgr8");
+        // TOOD: Should we just downscale image?
 
 
         cv::cvtColor(cv_img->image, hsv, cv::COLOR_BGR2HSV);
@@ -92,9 +93,14 @@ void callback(const sensor_msgs::ImageConstPtr &msg_left,
         std::vector<cv::Point> points; // All the points which is detected as part of the lane.
         cv::findNonZero(eroded_mask, points);
 
-        // ROS_INFO("%lu", points.size());
-        // If num points suddenly changes: skip this publish?
-        // Should stop the random explosion of completely incorrect points.s
+        if (points.size() > 100000) // Remove weird blobs.
+            return;
+
+        // Downscales the number of points
+        const static size_t stride = 50;
+        const auto point_strided_end = points.end() - (points.size() % stride);
+
+        // ROS_INFO("%i => %i", points.size(), (int) points.size() / stride);
 
         // Initialize the point cloud:
         // See: OOPS_WRONG_LINK ~~~https://answers.ros.org/question/212383/transformpointcloud-without-pcl/~~~
@@ -102,7 +108,8 @@ void callback(const sensor_msgs::ImageConstPtr &msg_left,
         point_cloud->header.frame_id = ground_frame; // helper.cameraModel.tfFrame();
         point_cloud->header.stamp = ros::Time::now();
         point_cloud->height = 1;
-        point_cloud->width = points.size();
+        // point_cloud->width = points.size();
+        point_cloud->width = points.size() / stride;
         point_cloud->is_bigendian = false;
         point_cloud->is_dense = false;
 
@@ -116,7 +123,11 @@ void callback(const sensor_msgs::ImageConstPtr &msg_left,
         double trans_sca = trans_rot.w();
 
         sensor_msgs::PointCloud2Iterator<float> x(*point_cloud, "x"), y(*point_cloud, "y"), z(*point_cloud, "z");
-        for (const auto &point : points) {
+
+        //for (const auto &point : points) { // Normal for:range loop requires a messy custom container class for stride.
+        auto point_iter = points.begin();
+        for (cv::Point &point = *point_iter;
+             point_iter != point_strided_end; point_iter += stride, point = *point_iter) {
             // ___________ Ray is a vector that points from the camera to the pixel: __________
             // Its calculation is pretty simple but is easier to use the image_geometry package.
             /* Basically:
