@@ -7,9 +7,6 @@
 #include <opencv/cv.h>
 #include <image_geometry/pinhole_camera_model.h>
 
-#include <sensor_msgs/PointCloud2.h>
-#include <sensor_msgs/point_cloud2_iterator.h>
-
 #include <tf/transform_listener.h>
 #include <tf/transform_datatypes.h>
 
@@ -18,11 +15,12 @@
 
 #include <vector>
 
+#include <nav_msgs/Path.h>
 
 // Objects that the callback needs. Initialized in main().
 struct Helpers {
-    ros::Publisher pub_point_cloud;
     image_transport::Publisher pub_masked;
+    ros::Publisher path_pub;
 
     cv::Scalar white_lower, white_upper; // HSV range for color white.
 
@@ -35,6 +33,8 @@ struct Helpers {
     uint8_t blur_size;
 
     bool publish_masked;
+    std::vector<std::pair<double, double> > path;
+
 
     // For projecting the image onto the ground.
     image_geometry::PinholeCameraModel cameraModel;
@@ -45,11 +45,15 @@ struct Helpers {
 const char *topic_image = "image_rect_color";
 const char *topic_camera_info = "camera_info";
 const char *topic_masked = "image_masked";
-const char *topic_pointcloud2 = "points2";
 
 // In rviz map/odom seems to be a true horizontal plane located at ground level.
 const char *ground_frame = "odom";
 
+const char *path_topic = "path";
+
+void fit(std::vector<std::pair<double, double> > &segs, const std::vector<std::pair<double, double> > &points) {
+
+}
 
 void callback(const sensor_msgs::ImageConstPtr &msg_left,
               Helpers &helper) {
@@ -93,36 +97,22 @@ void callback(const sensor_msgs::ImageConstPtr &msg_left,
         std::vector<cv::Point> points; // All the points which is detected as part of the lane.
         cv::findNonZero(eroded_mask, points);
 
-        if (points.size() > 100000) // Remove weird blobs.
+        const static size_t stride = 50;
+
+        if (points.size() > 100000 || points.size() <= stride) // Remove weird blobs.
             return;
 
         // Downscales the number of points
-        const static size_t stride = 50;
         const auto point_strided_end = points.end() - (points.size() % stride);
 
-        // ROS_INFO("%i => %i", points.size(), (int) points.size() / stride);
-
-        // Initialize the point cloud:
-        // See: OOPS_WRONG_LINK ~~~https://answers.ros.org/question/212383/transformpointcloud-without-pcl/~~~
-        sensor_msgs::PointCloud2Ptr point_cloud = boost::make_shared<sensor_msgs::PointCloud2>();
-        point_cloud->header.frame_id = ground_frame; // helper.cameraModel.tfFrame();
-        point_cloud->header.stamp = ros::Time::now();
-        point_cloud->height = 1;
-        // point_cloud->width = points.size();
-        point_cloud->width = points.size() / stride;
-        point_cloud->is_bigendian = false;
-        point_cloud->is_dense = false;
-
-        sensor_msgs::PointCloud2Modifier pc_mod(*point_cloud);
-        pc_mod.setPointCloud2FieldsByString(1, "xyz"); // Only want to publish spatial data.
-
+        // These are in camera_left frame
+        std::vector<std::pair<double, double>> points_n;
+        points_n.reserve(points.size() / stride + 1);
 
         // Change the transform to a more useful form.
         tf::Quaternion trans_rot = transform.getRotation();
         cv::Vec3d trans_vec{trans_rot.x(), trans_rot.y(), trans_rot.z()};
         double trans_sca = trans_rot.w();
-
-        sensor_msgs::PointCloud2Iterator<float> x(*point_cloud, "x"), y(*point_cloud, "y"), z(*point_cloud, "z");
 
         //for (const auto &point : points) { // Normal for:range loop requires a messy custom container class for stride.
         auto point_iter = points.begin();
@@ -160,21 +150,6 @@ void callback(const sensor_msgs::ImageConstPtr &msg_left,
              */
             cv::Vec3d ray{ray_cameraModel_frame.z, -ray_cameraModel_frame.x, -ray_cameraModel_frame.y};
 
-            /* NOT REQUIRED:
-            const static cv::Vec3d unit{1, 1, 1};
-
-            cv::Vec3d a = unit.cross(ray);
-            const double w_sq = (cv::norm(unit) * cv::norm(ray) + unit.dot(ray));
-            const double fac = sqrt(a[0] * a[0] + a[1] * a[1] + a[2] * a[2] + w_sq);
-            //
-            // https://stackoverflow.com/a/1171995/1515394
-            geometry_msgs::Pose pose;
-            pose.orientation.x = a[0] / fac;
-            pose.orientation.y = a[1] / fac;
-            pose.orientation.z = a[2] / fac;
-            pose.orientation.w = cv::sqrt(w_sq) / fac;
-            */
-
             // Rotate ray by using the transform.
             // Kinda black magic on v_p = q * v * q'
             // https://gamedev.stackexchange.com/a/50545/90578
@@ -189,17 +164,64 @@ void callback(const sensor_msgs::ImageConstPtr &msg_left,
             const double scale = transform.getOrigin().z() / ray_p[2];
 
             // Add ray to camera_left's origin
-            *x = transform.getOrigin().x() - ray_p[0] * scale;
-            *y = transform.getOrigin().y() - ray_p[1] * scale;
-            *z = 0; // transform.getOrigin().z() - ray_p[2] * scale;
-
-            // Go to next point in pointcloud.
-            ++x;
-            ++y;
-            ++z;
+            points_n.emplace_back(transform.getOrigin().x() - ray_p[0] * scale,
+                                  transform.getOrigin().y() - ray_p[1] * scale);
         }
-        helper.pub_point_cloud.publish(point_cloud);
 
+        // Need to transform last point to camera_left frame
+
+        std::vector<std::pair<double, double>> seg(helper.path);
+        seg.push_back(points_n.back());
+
+        points_n.pop_back();
+
+        std::vector<double> dists;
+        dists.reserve(points_n.size());
+
+        const auto &start = seg.front();
+        const auto &end = seg.back();
+
+        std::transform(points_n.begin(), points_n.end(), std::back_inserter(dists),
+                       [&start, &end](const std::pair<double, double> &point) {
+                           return std::abs((start.first - point.first) * (end.second - start.second) -
+                                           (start.first - end.first) * (point.second - end.second));
+                       });
+
+        auto points_n_max = points_n.begin();
+        {
+            auto points_n_itr = points_n.begin();
+            auto dists_itr = dists.begin();
+            auto &dist_max = *dists_itr;
+            const auto dists_end = dists.end();
+            for (++dists_itr; dists_itr != dists_end; ++dists_itr, ++points_n_itr)
+                if (dist_max < *dists_itr) {
+                    dist_max = *dists_itr;
+                    points_n_max = points_n_itr;
+                }
+        }
+
+        //ROS_INFO("%fl, %iul", *std::max_element(dists.begin(), dists.end()), seg.size());
+        //ROS_INFO("%fl, %fl => %fl, %fl", start.first, start.second, end.first, end.second);
+
+        // seg.end() is after the last element. We want to insert before last element. i.e -3
+
+        seg.insert(seg.end() - 1, *points_n_max);
+        for (const auto &x : seg) {
+            ROS_INFO("%fl", x.first);
+        }
+        nav_msgs::Path p;
+        p.header.stamp = ros::Time::now();
+        p.header.frame_id = ground_frame;
+
+        for (const auto &vertex : seg) {
+            p.poses.emplace_back();
+            p.poses.back().header = p.header;
+            p.poses.back().pose.orientation.w = 1;
+            p.poses.back().pose.position.x = vertex.first;
+            p.poses.back().pose.position.y = vertex.second;
+        }
+
+        helper.path_pub.publish(p);
     } catch (std::exception &e) {
         ROS_ERROR("Callback failed: %s", e.what());
     }
@@ -258,8 +280,9 @@ int main(int argc, char **argv) {
     image_transport::ImageTransport imageTransport(nh);
 
     Helpers helper{
-            nh.advertise<sensor_msgs::PointCloud2>(topic_pointcloud2, 5),
             imageTransport.advertise(topic_masked, 1),
+            nh.advertise<nav_msgs::Path>(path_topic, 1),
+
 
             (0, 0, 0),
             (180, 40, 255),
@@ -272,7 +295,7 @@ int main(int argc, char **argv) {
 
             7,
 
-            false
+            false,
     };
 
 
@@ -280,12 +303,27 @@ int main(int argc, char **argv) {
             topic_camera_info);
     helper.cameraModel.fromCameraInfo(camera_info);
 
+    {
+        std::vector<double> initial_x, initial_y;
+
+        if (!nh.getParam("lanes_mono/initial_path/x", initial_x))
+            initial_x = {0};
+        if (!nh.getParam("lanes_mono/initial_path/y", initial_y))
+            initial_y = {0};
+
+        initial_x.resize(std::min(initial_x.size(), initial_y.size()));
+        initial_y.resize(initial_x.size());
+
+        std::transform(initial_x.begin(), initial_x.end(), initial_y.begin(), std::back_inserter(helper.path),
+                       [](const double &x, const double &y) { return std::make_pair(x, y); });
+    }
 
     // For the dynamic parameter reconfigeration. see the function dynamic_reconfigure_callback
     dynamic_reconfigure::Server<igvc_bot::LanesConfig> server;
     dynamic_reconfigure::Server<igvc_bot::LanesConfig>::CallbackType dynamic_reconfigure_callback_function = boost::bind(
             &dynamic_reconfigure_callback, _1, _2, boost::ref(helper));
     server.setCallback(dynamic_reconfigure_callback_function);
+
 
 
     // Adds the callback
