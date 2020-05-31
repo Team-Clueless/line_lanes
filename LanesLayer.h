@@ -1,7 +1,3 @@
-//
-// Created by suraj on 5/30/20.
-//
-
 #ifndef IGVC_BOT_LANESLAYER_H
 #define IGVC_BOT_LANESLAYER_H
 
@@ -10,6 +6,10 @@
 #include <costmap_2d/layered_costmap.h>
 #include <costmap_2d/GenericPluginConfig.h>
 #include <dynamic_reconfigure/server.h>
+
+#include <vector>
+
+#include <igvc_bot/Lane.h>
 
 // ref https://github.com/rst-tu-dortmund/costmap_prohibition_layer/blob/kinetic-devel/src/costmap_prohibition_layer.cpp
 // ref https://github.com/rst-tu-dortmund/costmap_prohibition_layer/blob/kinetic-devel/include/costmap_prohibition_layer/costmap_prohibition_layer.h
@@ -30,7 +30,15 @@ namespace lanes_layer {
 
         virtual void updateCosts(costmap_2d::Costmap2D &master_grid, int min_i, int min_j, int max_i, int max_j);
 
+        void callback(const &
+
+        igvc_bot::Lane msg
+        );
+
     private:
+        size_t points_offset, update_from;
+        std::vector<std::pair<double, double> > vertices, vertices_to_remove;
+
         void reconfigureCB(costmap_2d::GenericPluginConfig &config, uint32_t level);
 
         dynamic_reconfigure::Server<costmap_2d::GenericPluginConfig> *dsrv_;
