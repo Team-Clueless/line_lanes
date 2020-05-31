@@ -8,6 +8,7 @@
 #include <dynamic_reconfigure/server.h>
 
 #include <vector>
+#include <mutex>
 
 #include <igvc_bot/Lane.h>
 
@@ -20,28 +21,36 @@ namespace lanes_layer {
     public:
         LanesLayer();
 
-        virtual ~LanesLayer();
+        ~LanesLayer() override;
 
-        virtual void onInitialize();
+        void onInitialize() override;
 
-        virtual void
+        void
         updateBounds(double robot_x, double robot_y, double robot_yaw, double *min_x, double *min_y, double *max_x,
-                     double *max_y);
+                     double *max_y) override;
 
-        virtual void updateCosts(costmap_2d::Costmap2D &master_grid, int min_i, int min_j, int max_i, int max_j);
+        void updateCosts(costmap_2d::Costmap2D &master_grid, int min_i, int min_j, int max_i, int max_j) override;
 
-        void callback(const &
-
-        igvc_bot::Lane msg
-        );
+        void callback(const igvc_bot::Lane::ConstPtr &msg);
 
     private:
-        size_t points_offset, update_from;
+        ros::Subscriber _sub;
+        std::mutex mutex; // stops updateCostmap and callback from running at the same time
+        size_t update_from{};
         std::vector<std::pair<double, double> > vertices, vertices_to_remove;
 
         void reconfigureCB(costmap_2d::GenericPluginConfig &config, uint32_t level);
 
         dynamic_reconfigure::Server<costmap_2d::GenericPluginConfig> *dsrv_;
+
+        double _min_x{}, _min_y{}, _max_x{}, _max_y{};
+
+
+        void write_segments(costmap_2d::Costmap2D &master_grid,
+                            const std::vector<std::pair<double, double>>::iterator &start,
+                            const std::vector<std::pair<double, double>>::iterator &end, unsigned char cost);
+
+        static void raytrace(costmap_2d::Costmap2D &costmap, int x0, int y0, int x1, int y1, unsigned char cost);
 
     };
 }
