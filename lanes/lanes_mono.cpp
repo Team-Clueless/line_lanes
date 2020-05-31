@@ -15,44 +15,14 @@
 
 #include <vector>
 #include <functional>
-#include <nav_msgs/Path.h>
+
+
 #include <igvc_bot/Lane.h>
 
+#include <igvc_bot/LaneHelpers.h>
+
 // Objects that the callback needs. Initialized in main().
-class LanePublisher {
-    ros::Publisher _pub;
-    igvc_bot::Lane _lane;
-    const size_t _num_to_keep;
 
-public:
-    igvc_bot::Lane::_header_type &header;
-    std::vector<std::pair<double, double> > vertices;
-
-    LanePublisher(const ros::Publisher &pub, const size_t &points_to_keep);
-
-    // void setPublisher(const std::string &topic, size_t queue_size = 10)
-
-    void publish();
-};
-
-LanePublisher::LanePublisher(const ros::Publisher &pub, const size_t &points_to_keep) : _pub(pub),
-                                                                                        _num_to_keep(points_to_keep),
-                                                                                        _lane(),
-                                                                                        header(_lane.header) {}
-
-void LanePublisher::publish() {
-    _lane.points.resize(vertices.size());
-    auto it_pts = _lane.points.begin();
-    for (auto &it : vertices) {
-        it_pts->x = it.first;
-        it_pts->y = it.second;
-        ++it_pts;
-    }
-
-    _pub.publish(_lane);
-    _lane.offset += vertices.size() - _num_to_keep;
-    vertices.erase(vertices.begin(), vertices.end() - _num_to_keep);
-}
 
 class Helpers {
 public:
@@ -62,6 +32,7 @@ public:
     cv::Scalar white_lower, white_upper; // HSV range for color white.
 
     double rect_frac;
+
     // For cv::erode
     uint8_t erosion_size, erosion_iter;
     cv::Mat erosion_element;
@@ -86,54 +57,10 @@ const char *topic_masked = "image_masked";
 // In rviz map/odom seems to be a true horizontal plane located at ground level.
 const char *ground_frame = "odom";
 
-const char *path_topic = "path";
 const char *lane_topic = "lane/updates";
 
 const size_t num_mutable_points = 2;
 const size_t num_sections = num_mutable_points + 1;
-
-
-class horiz_dist {
-    const double first, second;
-    double a, b;
-public:
-    horiz_dist(const std::pair<double, double> cur,
-               const std::pair<double, double> prev) : first(cur.first),
-                                                       second(cur.second),
-                                                       a(first - prev.first),
-                                                       b(second - prev.second) {
-        double factor = std::sqrt(a * a + b * b);
-        if (factor == 0) factor = 1;
-        a /= factor;
-        b /= factor;
-    }
-
-    double operator()(const std::pair<double, double> point) const {
-        return (point.first - first) * a +
-               (point.second - second) * b;
-    }
-};
-
-class vert_dist {
-    const double first, second;
-    double a, b;
-public:
-    vert_dist(const std::pair<double, double> cur,
-              const std::pair<double, double> prev) : first(cur.first),
-                                                      second(cur.second),
-                                                      b(first - prev.first),
-                                                      a(second - prev.second) {
-        double factor = std::sqrt(a * a + b * b);
-        if (factor == 0) factor = 1;
-        a /= factor;
-        b /= factor;
-    }
-
-    double operator()(const std::pair<double, double> point) const {
-        return (point.first - first) * a -
-               (point.second - second) * b;
-    }
-};
 
 
 void callback(const sensor_msgs::ImageConstPtr &msg_left,
@@ -196,6 +123,7 @@ void callback(const sensor_msgs::ImageConstPtr &msg_left,
         double trans_sca = trans_rot.w();
 
         auto &vertices = helper.lane_pub.vertices; // The current path.
+        bool path_updated = false;
 
         // Stores points oredered and section_wise.
         std::array<std::vector<std::pair<double, double> >, num_sections> points_vectors;
@@ -296,7 +224,7 @@ void callback(const sensor_msgs::ImageConstPtr &msg_left,
                 if (min_new_dist < dist && dist < max_new_dist) {
                     recent = true;
                     vertices.push_back(pt_new);
-
+                    path_updated = true;
                     ROS_INFO("Added a new point to path, now %lu vertices", vertices.size());
                 }
             }
@@ -336,12 +264,14 @@ void callback(const sensor_msgs::ImageConstPtr &msg_left,
 
             if (max_dist > epsilon_dist) {
                 vertices.insert(vertices.begin() + start_index + 1, max_pt);
+                path_updated = true;
+                ROS_INFO("Added a vertice to path, now %lu vertices.", vertices.size());
                 // Now recursively.
                 // But honestly is recursively req?
             }
         }
 
-        helper.lane_pub.publish();
+        if (path_updated) helper.lane_pub.publish();
     } catch (std::exception &e) {
         ROS_ERROR("Callback failed: %s", e.what());
     }
@@ -421,6 +351,7 @@ int main(int argc, char **argv) {
             topic_camera_info);
     helper.cameraModel.fromCameraInfo(camera_info);
 
+    // Get initial path from params
     {
         std::vector<double> initial_x, initial_y;
 
@@ -434,7 +365,7 @@ int main(int argc, char **argv) {
 
         std::transform(initial_x.begin(), initial_x.end(), initial_y.begin(),
                        std::back_inserter(helper.lane_pub.vertices),
-                       [](const double &x, const double &y) { return make_pair(x, y; });
+                       [](const double &x, const double &y) { return std::make_pair(x, y); });
     }
 
     // For the dynamic parameter reconfiguration. see the function dynamic_reconfigure_callback
