@@ -16,12 +16,48 @@
 #include <vector>
 #include <functional>
 #include <nav_msgs/Path.h>
+#include <igvc_bot/Lane.h>
 
 // Objects that the callback needs. Initialized in main().
+class LanePublisher {
+    ros::Publisher _pub;
+    igvc_bot::Lane _lane;
+    const size_t _num_to_keep;
+
+public:
+    igvc_bot::Lane::_header_type &header;
+    std::vector<std::pair<double, double> > vertices;
+
+    LanePublisher(const ros::Publisher &pub, const size_t &points_to_keep);
+
+    // void setPublisher(const std::string &topic, size_t queue_size = 10)
+
+    void publish();
+};
+
+LanePublisher::LanePublisher(const ros::Publisher &pub, const size_t &points_to_keep) : _pub(pub),
+                                                                                        _num_to_keep(points_to_keep),
+                                                                                        _lane(),
+                                                                                        header(_lane.header) {}
+
+void LanePublisher::publish() {
+    _lane.points.resize(vertices.size());
+    auto it_pts = _lane.points.begin();
+    for (auto &it : vertices) {
+        it_pts->x = it.first;
+        it_pts->y = it.second;
+        ++it_pts;
+    }
+
+    _pub.publish(_lane);
+    _lane.offset += vertices.size() - _num_to_keep;
+    vertices.erase(vertices.begin(), vertices.end() - _num_to_keep);
+}
+
 class Helpers {
 public:
     image_transport::Publisher pub_masked;
-    ros::Publisher path_pub;
+    LanePublisher lane_pub;
 
     cv::Scalar white_lower, white_upper; // HSV range for color white.
 
@@ -51,6 +87,7 @@ const char *topic_masked = "image_masked";
 const char *ground_frame = "odom";
 
 const char *path_topic = "path";
+const char *lane_topic = "lane/updates";
 
 const size_t num_mutable_points = 2;
 const size_t num_sections = num_mutable_points + 1;
@@ -158,7 +195,7 @@ void callback(const sensor_msgs::ImageConstPtr &msg_left,
         cv::Vec3d trans_vec{trans_rot.x(), trans_rot.y(), trans_rot.z()};
         double trans_sca = trans_rot.w();
 
-        auto &vertices = helper.path; // The current path.
+        auto &vertices = helper.lane_pub.vertices; // The current path.
 
         // Stores points oredered and section_wise.
         std::array<std::vector<std::pair<double, double> >, num_sections> points_vectors;
@@ -174,7 +211,7 @@ void callback(const sensor_msgs::ImageConstPtr &msg_left,
 
         std::vector<horiz_dist> section_funcs;
 
-        for (int i = 0; i < num_sections; i++) {
+        for (int i = 0; i < num_sections; i++) { // TODO: cache
             /*section_funcs.push_back(std::bind(section_func, *(vertices.end() - (1 + i)), *(vertices.end() - (2 + i)),
                                               std::placeholders::_1));*/
             section_funcs.emplace_back(*(vertices.end() - (1 + i)), *(vertices.end() - (2 + i)));
@@ -266,58 +303,45 @@ void callback(const sensor_msgs::ImageConstPtr &msg_left,
         }
 
         // Honestly do we even need this?
-        if (false) {
-            for (size_t i = num_sections - (recent ? 1u : 2u);
-                 i >= 0 && i < num_sections; i--) { // Size_t is unsigned!! Thus never stop
+        for (size_t i = num_sections - (recent ? 1u : 2u);
+             i >= 0 && i < num_sections; i--) { // Size_t is unsigned!! Thus never stop
 
-                auto &points_cur = points_vectors[i + (recent ? 0 : 1)];
+            auto &points_cur = points_vectors[i + (recent ? 0 : 1)];
 
-                if (points_cur.empty()) {
+            if (points_cur.empty()) {
+                continue;
+            }
+
+            const size_t start_index =
+                    (vertices.end() - (1 + i + 1)) - vertices.begin(); // the first point in section
+
+            std::vector<double> dists; // Perpendicular distances
+            dists.reserve(points_cur.size());
+
+            auto start = *(vertices.begin() + start_index);
+            auto end = *(vertices.begin() + start_index + 1);
+
+            vert_dist vd(start, end);
+            double max_dist = 0, cur_dist;
+            std::pair<double, double> &max_pt = points_cur.front();
+            for (const auto &pt : points_cur) {
+                cur_dist = vd(pt);
+                if (cur_dist > max_vert_dist)
                     continue;
-                }
-
-                const size_t start_index =
-                        (vertices.end() - (1 + i + 1)) - vertices.begin(); // the first point in section
-
-                std::vector<double> dists; // Perpendicular distances
-                dists.reserve(points_cur.size());
-
-                auto start = *(vertices.begin() + start_index);
-                auto end = *(vertices.begin() + start_index + 1);
-
-                vert_dist vd(start, end);
-                double max_dist = 0, cur_dist;
-                std::pair<double, double> &max_pt = points_cur.front();
-                for (const auto &pt : points_cur) {
-                    cur_dist = vd(pt);
-                    if (cur_dist > max_vert_dist)
-                        continue;
-                    if (cur_dist > max_dist) {
-                        max_dist = cur_dist;
-                        max_pt = pt;
-                    }
-                }
-
-                if (max_dist > epsilon_dist) {
-                    vertices.insert(vertices.begin() + start_index + 1, max_pt);
-                    // Now recursively.
-                    // But honestly is recursively req?
+                if (cur_dist > max_dist) {
+                    max_dist = cur_dist;
+                    max_pt = pt;
                 }
             }
-        }
-        nav_msgs::Path p;
-        p.header.stamp = ros::Time::now();
-        p.header.frame_id = ground_frame;
 
-        for (const auto &vertex : vertices) {
-            p.poses.emplace_back();
-            p.poses.back().header = p.header;
-            p.poses.back().pose.orientation.w = 1;
-            p.poses.back().pose.position.x = vertex.first;
-            p.poses.back().pose.position.y = vertex.second;
+            if (max_dist > epsilon_dist) {
+                vertices.insert(vertices.begin() + start_index + 1, max_pt);
+                // Now recursively.
+                // But honestly is recursively req?
+            }
         }
 
-        helper.path_pub.publish(p);
+        helper.lane_pub.publish();
     } catch (std::exception &e) {
         ROS_ERROR("Callback failed: %s", e.what());
     }
@@ -377,7 +401,7 @@ int main(int argc, char **argv) {
 
     Helpers helper{
             imageTransport.advertise(topic_masked, 1),
-            nh.advertise<nav_msgs::Path>(path_topic, 1),
+            {nh.advertise<igvc_bot::Lane>(lane_topic, 10), num_sections},
 
             (0, 0, 0),
             (180, 40, 255),
@@ -392,7 +416,6 @@ int main(int argc, char **argv) {
 
             false,
     };
-
 
     sensor_msgs::CameraInfo::ConstPtr camera_info = ros::topic::waitForMessage<sensor_msgs::CameraInfo>(
             topic_camera_info);
@@ -409,8 +432,9 @@ int main(int argc, char **argv) {
         initial_x.resize(num_mutable_points + 1); //std::min(initial_x.size(), initial_y.size()));
         initial_y.resize(num_mutable_points + 1); //initial_x.size());
 
-        std::transform(initial_x.begin(), initial_x.end(), initial_y.begin(), std::back_inserter(helper.path),
-                       [](const double &x, const double &y) { return std::make_pair(x, y); });
+        std::transform(initial_x.begin(), initial_x.end(), initial_y.begin(),
+                       std::back_inserter(helper.lane_pub.vertices),
+                       [](const double &x, const double &y) { return make_pair(x, y; });
     }
 
     // For the dynamic parameter reconfiguration. see the function dynamic_reconfigure_callback

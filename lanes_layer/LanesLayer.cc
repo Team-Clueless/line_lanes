@@ -42,4 +42,16 @@ namespace lanes_layer {
             return;
     }
 
+    void LanesLayer::callback(const igvc_bot::Lane &msg) {
+        if (msg.offset + msg.points.size() <= points_offset) return; // TODO: raise error
+        if (msg.offset <= points_offset) return; // TODO: implement
+
+        vertices.erase(vertices.begin() + msg.offset - points_offset, vertices.end());
+        vertices.reserve(msg.offset - points_offset + msg.points.size());
+        for (auto &it : msg.points)
+            vertices.emplace_back(it.x, it.y);
+        update_from = msg.offset - points_offset;
+
+    }
+
 } // end namespace
