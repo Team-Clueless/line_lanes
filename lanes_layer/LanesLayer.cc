@@ -64,7 +64,7 @@ namespace lanes_layer {
         if (vertices.empty())
             return;
 
-        const auto start = vertices.begin() + (update_from == 0 ? 1 : update_from);
+        const auto start = vertices.begin() + (update_from == 0 ? 0 : update_from - 1);
         const auto end = vertices.end();
         write_segments(master_grid, start, end, costmap_2d::LETHAL_OBSTACLE);
     }
@@ -113,8 +113,8 @@ namespace lanes_layer {
 
     void LanesLayer::callback(const igvc_bot::Lane::ConstPtr &msg) {
         std::lock_guard<std::mutex> guard(mutex);
-        ROS_INFO("got msg: %lu %il %lu %lu", msg->points.size(), msg->offset, update_from, vertices.size());
 
+        ROS_INFO("got msg:");
 
         // To support python like -ive indices.
         size_t msg_offset = msg->offset >= 0 ? msg->offset : vertices.size() + msg->offset;
@@ -123,11 +123,10 @@ namespace lanes_layer {
             std::pair<double, double> last_point = vertices.back();
             vertices.resize(msg_offset, last_point);
         } else {
-            vertices_to_remove.clear();
+            /*vertices_to_remove.clear();
             vertices_to_remove.reserve(vertices.size() - msg_offset);
             vertices_to_remove.insert(vertices_to_remove.begin(),
-                                      vertices.begin() + (msg_offset == 0 ? 0 : msg_offset - 1), vertices.end());
-
+                                      vertices.begin() + (msg_offset == 0 ? 0 : msg_offset - 1), vertices.end());*/
             vertices.erase(vertices.begin() + msg_offset, vertices.end());
         }
 
@@ -143,7 +142,7 @@ namespace lanes_layer {
         }
         update_from = std::min(update_from, msg_offset);
 
-        ROS_INFO("%lu %lu %lu", vertices.size(), vertices_to_remove.size(), update_from);
+        ROS_INFO("Finished msg");
 
     }
 } // end namespace lanes_layer
