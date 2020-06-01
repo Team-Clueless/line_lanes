@@ -37,7 +37,7 @@ namespace lanes_layer {
         ros::Subscriber _sub;
         std::mutex mutex; // stops updateCostmap and callback from running at the same time
         size_t update_from{};
-        std::vector<std::pair<double, double> > vertices, vertices_to_remove;
+        std::vector<std::pair<double, double> > vertices;
 
         void reconfigureCB(costmap_2d::GenericPluginConfig &config, uint32_t level);
 
@@ -46,9 +46,9 @@ namespace lanes_layer {
         double _min_x{}, _min_y{}, _max_x{}, _max_y{};
 
 
-        void write_segments(costmap_2d::Costmap2D &master_grid,
-                            const std::vector<std::pair<double, double>>::iterator &start,
-                            const std::vector<std::pair<double, double>>::iterator &end, unsigned char cost);
+        static void write_segments(costmap_2d::Costmap2D &master_grid,
+                                   const std::vector<std::pair<double, double>>::iterator &start,
+                                   const std::vector<std::pair<double, double>>::iterator &end, unsigned char cost);
 
         static void raytrace(costmap_2d::Costmap2D &costmap, int x0, int y0, int x1, int y1, unsigned char cost);
 
