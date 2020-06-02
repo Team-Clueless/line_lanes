@@ -3,6 +3,24 @@
 
 #include <ros/ros.h>
 #include <igvc_bot/Lane.h>
+#include <sensor_msgs/PointCloud2.h>
+#include <sensor_msgs/point_cloud2_iterator.h>
+
+class PCPublisher {
+    ros::Publisher _pub;
+    sensor_msgs::PointCloud2Ptr pc;
+
+public:
+    sensor_msgs::PointCloud2::_header_type *header{};
+
+    PCPublisher(const ros::Publisher &pub);
+
+    void clear_cloud();
+
+    std::array<sensor_msgs::PointCloud2Iterator<float>, 3> get_iter(size_t size);
+
+    void publish();
+};
 
 class LanePublisher {
     ros::Publisher _pub;
