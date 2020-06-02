@@ -12,6 +12,7 @@
 
 #include <igvc_bot/Lane.h>
 
+// Costmap Prohibition layer:
 // ref https://github.com/rst-tu-dortmund/costmap_prohibition_layer/blob/kinetic-devel/src/costmap_prohibition_layer.cpp
 // ref https://github.com/rst-tu-dortmund/costmap_prohibition_layer/blob/kinetic-devel/include/costmap_prohibition_layer/costmap_prohibition_layer.h
 
@@ -38,6 +39,7 @@ namespace lanes_layer {
         std::mutex mutex; // stops updateCostmap and callback from running at the same time
         size_t update_from{};
         std::vector<std::pair<double, double> > vertices;
+        std::vector<std::vector<std::pair<double, double> > > vertices_to_remove;
 
         void reconfigureCB(costmap_2d::GenericPluginConfig &config, uint32_t level);
 
@@ -46,11 +48,14 @@ namespace lanes_layer {
         double _min_x{}, _min_y{}, _max_x{}, _max_y{};
 
 
+        // Draws lines between pairs of vertices from start to end.
         static void write_segments(costmap_2d::Costmap2D &master_grid,
                                    const std::vector<std::pair<double, double>>::iterator &start,
                                    const std::vector<std::pair<double, double>>::iterator &end, unsigned char cost);
 
-        static void raytrace(costmap_2d::Costmap2D &costmap, int x0, int y0, int x1, int y1, unsigned char cost);
+        // Draws a line b/w (x0,y0) -> (x1,y1) where x,y given in costmap co-ords
+        // copied from costmap_prohibition_layer
+        static void write_line(costmap_2d::Costmap2D &costmap, int x0, int y0, int x1, int y1, unsigned char cost);
 
     };
 }
