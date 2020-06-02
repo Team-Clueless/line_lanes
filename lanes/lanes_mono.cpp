@@ -164,7 +164,7 @@ void callback(const sensor_msgs::ImageConstPtr &msg_left,
             section_funcs.emplace_back(*(vertices.end() - (1 + i)), *(vertices.end() - (2 + i)));
 
         // Some params
-        static const double max_horiz_dist = 4.5, max_vert_dist = 0.75, epsilon_dist = 0.1, min_new_dist = 0.5, max_new_dist = 4;
+        static const double max_horiz_dist = 4.5, max_vert_dist = 0.75, epsilon_dist = 0.25, min_new_dist = 0.5, max_new_dist = 4;
         /* Max_horizontal dist:
          * if horiz_dist(point) > max ==> Point is skipped
          * Sim for vertical dist
@@ -255,7 +255,7 @@ void callback(const sensor_msgs::ImageConstPtr &msg_left,
 
         bool recent = false;
         // This checks whether we need to append a new point to the path
-        static const double cos_max_angle = 0.85; // 0.81915204428; // cos(35deg)
+        static const double cos_max_angle = 0.8; // 0.81915204428; // cos(35deg)
         // 1 / std::sqrt(2);// This ensures the new segment is at a very sharp angle.
         if (!points_vectors[0].empty()) {
             auto &pt = vertices.back();
