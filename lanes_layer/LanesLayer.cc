@@ -25,14 +25,10 @@ namespace lanes_layer {
                 &LanesLayer::reconfigureCB, this, _1, _2);
         dsrv_->setCallback(cb);
 
-        ROS_INFO("Initialisin layer...");
-
         std::string topic;
         if (!nh.getParam("topic", topic))
             throw ros::Exception("Missing topic");
         _sub = nh.subscribe(topic, 10, &LanesLayer::callback, this);
-
-        ROS_INFO("initialized layer...");
     }
 
     // Move base required
@@ -61,23 +57,22 @@ namespace lanes_layer {
 
         std::lock_guard<std::mutex> guard(mutex);
 
+        // Remove the old vertices
         if (!vertices_to_remove.empty()) {
-            ROS_INFO("Removing vertices");
-
             for (auto &v : vertices_to_remove) {
                 write_segments(master_grid, v.begin(), v.end(), costmap_2d::FREE_SPACE);
             }
             vertices_to_remove.clear();
-
-            ROS_INFO("Removed vertices");
         }
 
-        if (vertices.empty())
-            return;
 
-        const auto start = vertices.begin() + (update_from == 0 ? 0 : update_from - 1);
-        const auto end = vertices.end();
-        write_segments(master_grid, start, end, costmap_2d::LETHAL_OBSTACLE);
+        // Write the new vertices.
+        if (!vertices.empty()) {
+            const auto start = vertices.begin() + (update_from == 0 ? 0 : update_from - 1);
+            const auto end = vertices.end();
+            write_segments(master_grid, start, end, costmap_2d::LETHAL_OBSTACLE);
+        }
+
     }
 
     void LanesLayer::write_segments(costmap_2d::Costmap2D &master_grid,
@@ -121,12 +116,24 @@ namespace lanes_layer {
     }
 
 
+    /* At the end of this function we will have three things:
+     * 1. The update_from i.e. the index  of vertices from which there are new points to be written
+     * 2. The new points will be added to the vertices
+     * 3. An entry in vertices_to_remove, i.e. old vertices which shall be erased.
+     */
     void LanesLayer::callback(const igvc_bot::Lane::ConstPtr &msg) {
+        // The message consists of 2 things:
+        // The offset and the points.
+        // The offset specifies from what index the new points are to be updated.
+        // This is usually not from the end.
+        // We need to erase the old vertices (which were after the offset)
+        // And write the new vertices to the costmap.
+
         std::lock_guard<std::mutex> guard(mutex);
 
         ROS_INFO("got msg:");
 
-        // To support python like -ive indices.
+        // To support python like -ive indices. // IGNORE
         size_t msg_offset = msg->offset >= 0 ? msg->offset : vertices.size() + msg->offset;
 
         if (msg->offset > vertices.size()) {

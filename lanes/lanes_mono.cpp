@@ -249,13 +249,13 @@ void callback(const sensor_msgs::ImageConstPtr &msg_left,
                 }
             }
         }
-        points.clear(); // Dun need points anymore, useful are copied to points_vectors.
+        points.clear(); // Dont need points anymore, useful are copied to points_vectors.
 
         helper.pc_pub.publish(); // Send point cloud
 
         bool recent = false;
         // This checks whether we need to append a new point to the path
-        static const double cos_max_angle = 1 / std::sqrt(2);
+        static const double cos_max_angle = 1 / std::sqrt(2);// This ensures the new segment is at a very sharp angle.
         if (!points_vectors[0].empty()) {
             auto &pt = vertices.back();
             auto dit = dist_vectors[0].end() - 1;
