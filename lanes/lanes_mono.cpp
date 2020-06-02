@@ -124,7 +124,7 @@ void callback(const sensor_msgs::ImageConstPtr &msg_left,
         }
 
         // Reduce the num points
-        const static size_t stride = 20; // Iterate over every 20th point
+        const static size_t stride = 10; // Iterate over every 20th point
 
         if (points.size() > 100000 || points.size() <= stride) // Quit on bad num points.
             return;
@@ -164,7 +164,7 @@ void callback(const sensor_msgs::ImageConstPtr &msg_left,
             section_funcs.emplace_back(*(vertices.end() - (1 + i)), *(vertices.end() - (2 + i)));
 
         // Some params
-        static const double max_horiz_dist = 4, max_vert_dist = 1, epsilon_dist = 0.5, min_new_dist = 0.5, max_new_dist = 4;
+        static const double max_horiz_dist = 5, max_vert_dist = 1, epsilon_dist = 0.5, min_new_dist = 0.5, max_new_dist = 4.5;
         /* Max_horizontal dist:
          * if horiz_dist(point) > max ==> Point is skipped
          * Sim for vertical dist
@@ -255,10 +255,10 @@ void callback(const sensor_msgs::ImageConstPtr &msg_left,
 
         bool recent = false;
         // This checks whether we need to append a new point to the path
-        static const double cos_max_angle = 1 / std::sqrt(2);// This ensures the new segment is at a very sharp angle.
+        static const double cos_max_angle = 0.81915204428; // cos(35deg)1 / std::sqrt(2);// This ensures the new segment is at a very sharp angle.
         if (!points_vectors[0].empty()) {
             auto &pt = vertices.back();
-            auto dit = dist_vectors[0].end() - 1;
+            auto dit = dist_vectors[0].end() - 1; // Horizontal distnce
             for (auto it = points_vectors[0].end() - 1; it != points_vectors[0].begin(); --it, --dit) {
                 auto &pt_new = *it;
 
