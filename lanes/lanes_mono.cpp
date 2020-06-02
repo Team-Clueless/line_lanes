@@ -84,8 +84,7 @@ void callback(const sensor_msgs::ImageConstPtr &msg_left,
 
 
             cv::cvtColor(cv_img->image, hsv, cv::COLOR_BGR2HSV);
-            //cv::GaussianBlur(hsv, blur, cv::Size(helper.blur_size, helper.blur_size), 0, 0);
-            cv::bilateralFilter()
+            cv::GaussianBlur(hsv, blur, cv::Size(helper.blur_size, helper.blur_size), 0, 0);
             // Get white pixels
             cv::inRange(blur, helper.white_lower, helper.white_upper, raw_mask);
 
@@ -110,13 +109,13 @@ void callback(const sensor_msgs::ImageConstPtr &msg_left,
         }
 
         // Reduce the num points
-        const static size_t stride = 20;
+        const static size_t stride = 20; // Iterate over every 20th point
 
         if (points.size() > 100000 || points.size() <= stride) // Quit on bad num points.
             return;
 
         // Downscales the number of points
-        const auto point_strided_end = points.end() - (points.size() % stride);
+        const auto point_strided_end = points.end() - (points.size() % stride); // Last point
 
 
         // Change the transform to a more useful form.
@@ -124,6 +123,7 @@ void callback(const sensor_msgs::ImageConstPtr &msg_left,
         cv::Vec3d trans_vec{trans_rot.x(), trans_rot.y(), trans_rot.z()};
         double trans_sca = trans_rot.w();
 
+        // PC Publishing
         helper.pc_pub.clear_cloud();
         //auto[x, y, z] = helper.pc_pub.get_iter(points.size() / stride);
         auto _pc_iters = helper.pc_pub.get_iter(points.size() / stride);
@@ -133,20 +133,31 @@ void callback(const sensor_msgs::ImageConstPtr &msg_left,
 
 
         auto &vertices = helper.lane_pub.vertices; // The current path.
-        bool path_updated = false;
+        bool path_updated = false; // Was new point added
 
-        // Stores points oredered and section_wise.
+        // Stores points ordered and section_wise.
         std::array<std::vector<std::pair<double, double> >, num_sections> points_vectors;
 
-        // Section wise and sorted, stores the distance of each point from the section line.
+        // Stores the perpendicular distance of the point from the section line. This stays sorted.
         std::array<std::vector<double>, num_sections> dist_vectors;
 
-        std::vector<horiz_dist> section_funcs;
+        std::vector<horiz_dist> section_funcs; // Functions that give horizontal distance. Defined in LaneHelppers.cc
 
-        for (int i = 0; i < num_sections; i++) // TODO: cache
+        // vertices.end() is an iter right after the last element.
+        // *(vertices.end() - 1) ==> Last element.. *(... - 2) ==> second last element
+        for (int i = 0; i < num_sections; i++) // Store section func from
             section_funcs.emplace_back(*(vertices.end() - (1 + i)), *(vertices.end() - (2 + i)));
 
-        const double max_horiz_dist = 2, max_vert_dist = 1, epsilon_dist = 0.5, min_new_dist = 1, max_new_dist = 4;
+        // Some params
+        static const double max_horiz_dist = 2, max_vert_dist = 1, epsilon_dist = 0.5, min_new_dist = 1, max_new_dist = 2;
+        /* Max_horizontal dist:
+         * if horiz_dist(point) > max ==> Point is skipped
+         * Sim for vertical dist
+         *
+         * epsilon_dist: if distance of point from existing segment > epsilon dist ===> Then add that as a new vertice.
+         *
+         * min/max new_dist: For a point to be added at the end of the existing path, it must satisfy the above conditions
+         */
 
         //for (const auto &point : points) { // Normal for:range loop requires a messy custom container class for stride.
         auto point_iter = points.begin();
@@ -199,6 +210,7 @@ void callback(const sensor_msgs::ImageConstPtr &msg_left,
             std::pair<double, double> point = std::make_pair(transform.getOrigin().x() - ray_p[0] * scale,
                                                              transform.getOrigin().y() - ray_p[1] * scale);
 
+            // Add to point cloud
             *x = point.first;
             *y = point.second;
             *z = 0;
@@ -206,13 +218,15 @@ void callback(const sensor_msgs::ImageConstPtr &msg_left,
             ++y;
             ++z;
 
+            // Sort them section wise
             double dist;
             for (int i = 0; i < num_sections; i++) {
-                dist = section_funcs[i](point);
-                if (dist >= 0) {
+                dist = section_funcs[i](point); // perpendicular dist from ith point from the end.
+                if (dist >= 0) { // i.e. point is to the right of the line i.e. in that section
                     if (dist > max_horiz_dist) { // Point too far, ignore.
                         break;
                     }
+                    // Inserts point and dist to the respective vectors while soring by increasing dist..
                     const auto it = std::lower_bound(dist_vectors[i].begin(), dist_vectors[i].end(), dist);
                     points_vectors[i].insert(points_vectors[i].begin() + (it - dist_vectors[i].begin()), point);
                     dist_vectors[i].insert(it, dist);
@@ -221,15 +235,26 @@ void callback(const sensor_msgs::ImageConstPtr &msg_left,
             }
         }
         points.clear(); // Dun need points anymore, useful are copied to points_vectors.
-        helper.pc_pub.publish();
+
+        helper.pc_pub.publish(); // Send point cloud
+
+        {
+            size_t sum;
+            for (auto &section : points_vectors)
+                sum += section.size();
+            ROS_INFO("Num points: %lu", sum);
+        }
 
         bool recent = false;
+        // This checks whether we need to append a new point to the path
         {
             if (!points_vectors[0].empty()) {
                 auto &pt = vertices.back();
                 auto &pt_new = points_vectors[0].back();
                 double dist = std::sqrt((pt_new.first - pt.first) * (pt_new.first - pt.first) +
                                         (pt_new.second - pt.second) * (pt_new.second - pt.second));
+
+                // If dist comes in the right range, add it to the path.
                 if (min_new_dist < dist && dist < max_new_dist) {
                     recent = true;
                     vertices.push_back(pt_new);
@@ -239,30 +264,31 @@ void callback(const sensor_msgs::ImageConstPtr &msg_left,
             }
         }
 
-        // Honestly do we even need this?
-        for (size_t i = num_sections - (recent ? 1u : 2u);
-             i >= 0 && i < num_sections; i--) { // Size_t is unsigned!! Thus never stop
+        // For all the segments, see if any point has a perpendicular distance more than epsilon_dist
+        for (size_t i = num_sections - (recent ? 1u : 2u); i >= 0 && i < num_sections; i--) {
 
+            // Set of points in the current segment
             auto &points_cur = points_vectors[i + (recent ? 0 : 1)];
 
-            if (points_cur.empty()) {
+            if (points_cur.empty()) // No points in this segment
                 continue;
-            }
 
-            const size_t start_index =
-                    (vertices.end() - (1 + i + 1)) - vertices.begin(); // the first point in section
+            // The index of start vertice for this segment
+            const size_t start_index = (vertices.end() - (1 + i + 1)) - vertices.begin();
 
-            std::vector<double> dists; // Perpendicular distances
+            std::vector<double> dists; // Vector of perpendicular dists
             dists.reserve(points_cur.size());
 
+            // The start and end vertices of the segment
             auto start = *(vertices.begin() + start_index);
             auto end = *(vertices.begin() + start_index + 1);
 
-            vert_dist vd(start, end);
-            double max_dist = 0, cur_dist;
+            vert_dist dist(start, end); // The Perpendicular dist func
+
+            double max_dist = 0, cur_dist; // Find point with max distance from segment (but within max_vert_dist)
             std::pair<double, double> &max_pt = points_cur.front();
             for (const auto &pt : points_cur) {
-                cur_dist = vd(pt);
+                cur_dist = dist(pt);
                 if (cur_dist > max_vert_dist)
                     continue;
                 if (cur_dist > max_dist) {
@@ -275,15 +301,18 @@ void callback(const sensor_msgs::ImageConstPtr &msg_left,
                 vertices.insert(vertices.begin() + start_index + 1, max_pt);
                 path_updated = true;
                 ROS_INFO("Added a vertice to path, now %lu vertices.", vertices.size());
-                // Now recursively.
-                // But honestly is recursively req?
+                // Ideally this should be done recursively for the newly created segments untill all points are
+                // within epsilon_dist. However doesnt seem nessacary.
             }
         }
 
+        // Update the path if required.
         if (path_updated) helper.lane_pub.publish();
+
     } catch (std::exception &e) {
         ROS_ERROR("Callback failed: %s", e.what());
     }
+
 }
 
 // This allows us to change params of the node while it is running: see cfg/lanes.cfg.
