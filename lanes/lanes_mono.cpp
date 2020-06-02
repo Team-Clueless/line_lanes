@@ -97,7 +97,7 @@ void callback(const sensor_msgs::ImageConstPtr &msg_left,
 
 
             // TODO: Very expensive; switch to laser scan
-            std::vector<cv::Point> yellow_points;
+            std::vector<cv::Point> yellow_points; // Yellow points are part of barrel
             cv::inRange(blur, cv::Scalar(0, 250, 0), cv::Scalar(180, 255, 255), yellow_mask);
             cv::findNonZero(yellow_mask, yellow_points);
             int minx = yellow_mask.cols, maxx = 0;
@@ -164,7 +164,7 @@ void callback(const sensor_msgs::ImageConstPtr &msg_left,
             section_funcs.emplace_back(*(vertices.end() - (1 + i)), *(vertices.end() - (2 + i)));
 
         // Some params
-        static const double max_horiz_dist = 2, max_vert_dist = 1, epsilon_dist = 0.5, min_new_dist = 0.5, max_new_dist = 3;
+        static const double max_horiz_dist = 4, max_vert_dist = 1, epsilon_dist = 0.5, min_new_dist = 0.5, max_new_dist = 4;
         /* Max_horizontal dist:
          * if horiz_dist(point) > max ==> Point is skipped
          * Sim for vertical dist
@@ -255,10 +255,11 @@ void callback(const sensor_msgs::ImageConstPtr &msg_left,
 
         bool recent = false;
         // This checks whether we need to append a new point to the path
-
+        static const double cos_max_angle = 1 / std::sqrt(2);
         if (!points_vectors[0].empty()) {
             auto &pt = vertices.back();
-            for (auto it = points_vectors[0].end() - 1; it != points_vectors[0].begin(); --it) {
+            auto dit = dist_vectors[0].end() - 1;
+            for (auto it = points_vectors[0].end() - 1; it != points_vectors[0].begin(); --it, --dit) {
                 auto &pt_new = *it;
 
                 double dist = std::sqrt((pt_new.first - pt.first) * (pt_new.first - pt.first) +
@@ -266,7 +267,7 @@ void callback(const sensor_msgs::ImageConstPtr &msg_left,
 
                 // If dist comes in the right range, add it to the path.
                 if (min_new_dist < dist) {
-                    if (dist < max_new_dist) {
+                    if (dist < max_new_dist && *dit > dist * cos_max_angle) {
                         recent = true;
                         vertices.push_back(pt_new);
                         path_updated = true;
