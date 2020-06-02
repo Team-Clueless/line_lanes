@@ -149,7 +149,7 @@ void callback(const sensor_msgs::ImageConstPtr &msg_left,
             section_funcs.emplace_back(*(vertices.end() - (1 + i)), *(vertices.end() - (2 + i)));
 
         // Some params
-        static const double max_horiz_dist = 2, max_vert_dist = 1, epsilon_dist = 0.5, min_new_dist = 1, max_new_dist = 2;
+        static const double max_horiz_dist = 2, max_vert_dist = 1, epsilon_dist = 0.5, min_new_dist = 1, max_new_dist = 4;
         /* Max_horizontal dist:
          * if horiz_dist(point) > max ==> Point is skipped
          * Sim for vertical dist
@@ -238,13 +238,6 @@ void callback(const sensor_msgs::ImageConstPtr &msg_left,
 
         helper.pc_pub.publish(); // Send point cloud
 
-        {
-            size_t sum;
-            for (auto &section : points_vectors)
-                sum += section.size();
-            ROS_INFO("Num points: %lu", sum);
-        }
-
         bool recent = false;
         // This checks whether we need to append a new point to the path
         {
@@ -265,7 +258,7 @@ void callback(const sensor_msgs::ImageConstPtr &msg_left,
         }
 
         // For all the segments, see if any point has a perpendicular distance more than epsilon_dist
-        for (size_t i = num_sections - (recent ? 1u : 2u); i >= 0 && i < num_sections; i--) {
+        for (size_t i = num_sections - (recent ? 1u : 2u);i >= 0 && i < num_sections; i--) {
 
             // Set of points in the current segment
             auto &points_cur = points_vectors[i + (recent ? 0 : 1)];
@@ -309,10 +302,9 @@ void callback(const sensor_msgs::ImageConstPtr &msg_left,
         // Update the path if required.
         if (path_updated) helper.lane_pub.publish();
 
-    } catch (std::exception &e) {
+    } catch (const std::exception &e) {
         ROS_ERROR("Callback failed: %s", e.what());
     }
-
 }
 
 // This allows us to change params of the node while it is running: see cfg/lanes.cfg.
@@ -405,6 +397,7 @@ int main(int argc, char **argv) {
         std::transform(initial_x.begin(), initial_x.end(), initial_y.begin(),
                        std::back_inserter(helper.lane_pub.vertices),
                        [](const double &x, const double &y) { return std::make_pair(x, y); });
+        helper.lane_pub.publish();
     }
 
     // For the dynamic parameter reconfiguration. see the function dynamic_reconfigure_callback
