@@ -27,6 +27,7 @@
 class Helpers {
 public:
     image_transport::Publisher pub_masked;
+    PCPublisher pc_pub;
     LanePublisher lane_pub;
 
     cv::Scalar white_lower, white_upper; // HSV range for color white.
@@ -57,6 +58,7 @@ const char *topic_masked = "image_masked";
 // In rviz map/odom seems to be a true horizontal plane located at ground level.
 const char *ground_frame = "odom";
 
+const char *pc_topic = "points2";
 const char *lane_topic = "lane/updates";
 
 const size_t num_mutable_points = 2;
@@ -82,8 +84,8 @@ void callback(const sensor_msgs::ImageConstPtr &msg_left,
 
 
             cv::cvtColor(cv_img->image, hsv, cv::COLOR_BGR2HSV);
-            cv::GaussianBlur(hsv, blur, cv::Size(helper.blur_size, helper.blur_size), 0, 0);
-
+            //cv::GaussianBlur(hsv, blur, cv::Size(helper.blur_size, helper.blur_size), 0, 0);
+            cv::bilateralFilter()
             // Get white pixels
             cv::inRange(blur, helper.white_lower, helper.white_upper, raw_mask);
 
@@ -121,6 +123,14 @@ void callback(const sensor_msgs::ImageConstPtr &msg_left,
         tf::Quaternion trans_rot = transform.getRotation();
         cv::Vec3d trans_vec{trans_rot.x(), trans_rot.y(), trans_rot.z()};
         double trans_sca = trans_rot.w();
+
+        helper.pc_pub.clear_cloud();
+        //auto[x, y, z] = helper.pc_pub.get_iter(points.size() / stride);
+        auto _pc_iters = helper.pc_pub.get_iter(points.size() / stride);
+        auto x = _pc_iters[0], y = _pc_iters[1], z = _pc_iters[2];
+        helper.pc_pub.header->frame_id = ground_frame;
+        helper.pc_pub.header->stamp = ros::Time::now();
+
 
         auto &vertices = helper.lane_pub.vertices; // The current path.
         bool path_updated = false;
@@ -189,6 +199,13 @@ void callback(const sensor_msgs::ImageConstPtr &msg_left,
             std::pair<double, double> point = std::make_pair(transform.getOrigin().x() - ray_p[0] * scale,
                                                              transform.getOrigin().y() - ray_p[1] * scale);
 
+            *x = point.first;
+            *y = point.second;
+            *z = 0;
+            ++x;
+            ++y;
+            ++z;
+
             double dist;
             for (int i = 0; i < num_sections; i++) {
                 dist = section_funcs[i](point);
@@ -203,7 +220,8 @@ void callback(const sensor_msgs::ImageConstPtr &msg_left,
                 }
             }
         }
-        points.clear(); // Dun need points anymore, usefuls are copied to points_vectors.
+        points.clear(); // Dun need points anymore, useful are copied to points_vectors.
+        helper.pc_pub.publish();
 
         bool recent = false;
         {
@@ -322,6 +340,7 @@ int main(int argc, char **argv) {
 
     Helpers helper{
             imageTransport.advertise(topic_masked, 1),
+            {nh.advertise<sensor_msgs::PointCloud2>(pc_topic, 2)},
             {nh.advertise<igvc_bot::Lane>(lane_topic, 10), num_sections},
 
             (0, 0, 0),
