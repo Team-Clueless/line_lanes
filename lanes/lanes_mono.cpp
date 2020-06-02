@@ -84,8 +84,7 @@ void callback(const sensor_msgs::ImageConstPtr &msg_left,
 
 
             cv::cvtColor(cv_img->image, hsv, cv::COLOR_BGR2HSV);
-            //cv::GaussianBlur(hsv, blur, cv::Size(helper.blur_size, helper.blur_size), 0, 0);
-            cv::bilateralFilter()
+            cv::GaussianBlur(hsv, blur, cv::Size(helper.blur_size, helper.blur_size), 0, 0);
             // Get white pixels
             cv::inRange(blur, helper.white_lower, helper.white_upper, raw_mask);
 
