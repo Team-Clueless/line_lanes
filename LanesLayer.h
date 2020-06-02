@@ -26,10 +26,12 @@ namespace lanes_layer {
 
         void onInitialize() override;
 
+        // Here we have to specify the region that is to be updated.
         void
         updateBounds(double robot_x, double robot_y, double robot_yaw, double *min_x, double *min_y, double *max_x,
                      double *max_y) override;
 
+        // Actually write the data to the costmap
         void updateCosts(costmap_2d::Costmap2D &master_grid, int min_i, int min_j, int max_i, int max_j) override;
 
         void callback(const igvc_bot::Lane::ConstPtr &msg);
