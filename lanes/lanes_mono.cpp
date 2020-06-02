@@ -77,7 +77,7 @@ void callback(const sensor_msgs::ImageConstPtr &msg_left,
 
         // OpenCV Stuff Which fills up points.
         {
-            cv::Mat hsv, blur, raw_mask, eroded_mask, masked;
+            cv::Mat hsv, blur, raw_mask, eroded_mask, masked, yellow_mask;
 
             cv_bridge::CvImageConstPtr cv_img = cv_bridge::toCvCopy(msg_left, "bgr8");
             // TODO: Should we just downscale image?
@@ -94,6 +94,21 @@ void callback(const sensor_msgs::ImageConstPtr &msg_left,
             // Errors in projection increase as we approach the halfway point of the image:
             // Apply a mask to remove top 60%
             raw_mask(cv::Rect(0, 0, raw_mask.cols, (int) (raw_mask.rows * helper.rect_frac))) = 0;
+
+
+            // TODO: Very expensive; switch to laser scan
+            std::vector<cv::Point> yellow_points;
+            cv::inRange(blur, cv::Scalar(0, 250, 0), cv::Scalar(180, 255, 255), yellow_mask);
+            cv::findNonZero(yellow_mask, yellow_points);
+            int minx = yellow_mask.cols, maxx = 0;
+            if (!yellow_points.empty()) {
+                for (auto &v : yellow_points) {
+                    minx = std::min(minx, v.x);
+                    maxx = std::max(maxx, v.x);
+                }
+            }
+            if (minx < maxx)
+                raw_mask(cv::Rect(minx, 0, maxx - minx, raw_mask.rows)) = 0;
 
             cv::erode(raw_mask, eroded_mask, helper.erosion_element, cv::Point(-1, -1), helper.erosion_iter);
 
@@ -149,7 +164,7 @@ void callback(const sensor_msgs::ImageConstPtr &msg_left,
             section_funcs.emplace_back(*(vertices.end() - (1 + i)), *(vertices.end() - (2 + i)));
 
         // Some params
-        static const double max_horiz_dist = 2, max_vert_dist = 1, epsilon_dist = 0.5, min_new_dist = 1, max_new_dist = 4;
+        static const double max_horiz_dist = 2, max_vert_dist = 1, epsilon_dist = 0.5, min_new_dist = 0.5, max_new_dist = 3;
         /* Max_horizontal dist:
          * if horiz_dist(point) > max ==> Point is skipped
          * Sim for vertical dist
@@ -240,25 +255,32 @@ void callback(const sensor_msgs::ImageConstPtr &msg_left,
 
         bool recent = false;
         // This checks whether we need to append a new point to the path
-        {
-            if (!points_vectors[0].empty()) {
-                auto &pt = vertices.back();
-                auto &pt_new = points_vectors[0].back();
+
+        if (!points_vectors[0].empty()) {
+            auto &pt = vertices.back();
+            for (auto it = points_vectors[0].end() - 1; it != points_vectors[0].begin(); --it) {
+                auto &pt_new = *it;
+
                 double dist = std::sqrt((pt_new.first - pt.first) * (pt_new.first - pt.first) +
                                         (pt_new.second - pt.second) * (pt_new.second - pt.second));
 
                 // If dist comes in the right range, add it to the path.
-                if (min_new_dist < dist && dist < max_new_dist) {
-                    recent = true;
-                    vertices.push_back(pt_new);
-                    path_updated = true;
-                    ROS_INFO("Added a new point to path, now %lu vertices", vertices.size());
-                }
+                if (min_new_dist < dist) {
+                    if (dist < max_new_dist) {
+                        recent = true;
+                        vertices.push_back(pt_new);
+                        path_updated = true;
+                        ROS_INFO("Added a new point to path, now %lu vertices", vertices.size());
+                        break;
+                    }
+                } else
+                    break;
             }
         }
 
+
         // For all the segments, see if any point has a perpendicular distance more than epsilon_dist
-        for (size_t i = num_sections - (recent ? 1u : 2u);i >= 0 && i < num_sections; i--) {
+        for (size_t i = num_sections - (recent ? 1u : 2u); i >= 0 && i < num_sections; i--) {
 
             // Set of points in the current segment
             auto &points_cur = points_vectors[i + (recent ? 0 : 1)];
