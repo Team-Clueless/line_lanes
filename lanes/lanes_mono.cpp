@@ -154,14 +154,17 @@ void callback(const sensor_msgs::ImageConstPtr &msg_left,
         std::array<std::vector<std::pair<double, double> >, num_sections> points_vectors;
 
         // Stores the perpendicular distance of the point from the section line. This stays sorted.
-        std::array<std::vector<double>, num_sections> dist_vectors;
+        std::array<std::vector<double>, num_sections> horiz_dist_vectors;
 
-        std::vector<horiz_dist> section_funcs; // Functions that give horizontal distance. Defined in LaneHelppers.cc
-
+        std::vector<horiz_dist> section_funcs; // Functions that give horizontal distance
+        auto cur_vertice = vertices.end() - 1;
+        for (int i = 0; i < num_sections; i++) {
+            section_funcs.emplace_back(*(cur_vertice), *(cur_vertice - 1));
+            --cur_vertice;
+        }
+        // Note:
         // vertices.end() is an iter right after the last element.
         // *(vertices.end() - 1) ==> Last element.. *(... - 2) ==> second last element
-        for (int i = 0; i < num_sections; i++) // Store section func from
-            section_funcs.emplace_back(*(vertices.end() - (1 + i)), *(vertices.end() - (2 + i)));
 
         // Some params
         static const double max_horiz_dist = 4.5, max_vert_dist = 0.75, epsilon_dist = 0.25, min_new_dist = 0.5, max_new_dist = 4;
@@ -242,9 +245,9 @@ void callback(const sensor_msgs::ImageConstPtr &msg_left,
                         break;
                     }
                     // Inserts point and dist to the respective vectors while soring by increasing dist..
-                    const auto it = std::lower_bound(dist_vectors[i].begin(), dist_vectors[i].end(), dist);
-                    points_vectors[i].insert(points_vectors[i].begin() + (it - dist_vectors[i].begin()), point);
-                    dist_vectors[i].insert(it, dist);
+                    const auto it = std::lower_bound(horiz_dist_vectors[i].begin(), horiz_dist_vectors[i].end(), dist);
+                    points_vectors[i].insert(points_vectors[i].begin() + (it - horiz_dist_vectors[i].begin()), point);
+                    horiz_dist_vectors[i].insert(it, dist);
                     break;
                 }
             }
@@ -259,7 +262,7 @@ void callback(const sensor_msgs::ImageConstPtr &msg_left,
         // 1 / std::sqrt(2);// This ensures the new segment is at a very sharp angle.
         if (!points_vectors[0].empty()) {
             auto &pt = vertices.back();
-            auto dit = dist_vectors[0].end() - 1; // Horizontal distnce
+            auto dit = horiz_dist_vectors[0].end() - 1; // Horizontal distnce
             for (auto it = points_vectors[0].end() - 1; it != points_vectors[0].begin(); --it, --dit) {
                 auto &pt_new = *it;
 
