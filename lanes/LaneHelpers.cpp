@@ -46,9 +46,10 @@ vert_dist::vert_dist(std::pair<double, double> cur, std::pair<double, double> pr
     b /= factor;
 }
 
+// GETS ABSOLUTE VALUE
 double vert_dist::operator()(std::pair<double, double> point) const {
-    return (point.first - first) * a -
-           (point.second - second) * b;
+    return std::abs((point.first - first) * a -
+                    (point.second - second) * b);
 }
 
 

@@ -7,7 +7,6 @@
 #include <opencv/cv.h>
 #include <image_geometry/pinhole_camera_model.h>
 
-#include <tf/transform_listener.h>
 #include <tf/transform_datatypes.h>
 
 #include <dynamic_reconfigure/server.h>
@@ -20,36 +19,6 @@
 #include <igvc_bot/Lane.h>
 
 #include <igvc_bot/LaneHelpers.h>
-
-// Objects that the callback needs. Initialized in main().
-
-
-class Helpers {
-public:
-    image_transport::Publisher pub_masked;
-    PCPublisher pc_pub;
-    LanePublisher lane_pub;
-
-    cv::Scalar white_lower, white_upper; // HSV range for color white.
-
-    double rect_frac;
-
-    // For cv::erode
-    uint8_t erosion_size, erosion_iter;
-    cv::Mat erosion_element;
-
-    // for cv::blur
-    uint8_t blur_size;
-
-    bool publish_masked;
-    std::vector<std::pair<double, double> > path;
-
-
-    // For projecting the image onto the ground.
-    image_geometry::PinholeCameraModel cameraModel;
-    tf::TransformListener listener;
-};
-
 
 const char *topic_image = "image_rect_color";
 const char *topic_camera_info = "camera_info";
@@ -64,111 +33,67 @@ const char *lane_topic = "lane/updates";
 const size_t num_mutable_points = 2;
 const size_t num_sections = num_mutable_points + 1;
 
+void process_image(const cv_bridge::CvImageConstPtr &cv_img, std::vector<cv::Point> &points,
+                   const Helpers::CVParams &params, image_transport::Publisher *cv_pub);
 
-void callback(const sensor_msgs::ImageConstPtr &msg_left,
+void callback(const sensor_msgs::ImageConstPtr &msg,
               Helpers &helper) {
 
     try {
         // Get transform asap for something from the right time without messing around with tf.
         tf::StampedTransform transform;
-        helper.listener.lookupTransform(ground_frame, helper.cameraModel.tfFrame(), ros::Time(0), transform);
+        helper.listener.lookupTransform(ground_frame, helper.cameraModel.tfFrame(), ros::Time(0),
+                                        transform);
 
-        std::vector<cv::Point> points; // All the points which is detected as part of the lane.
+        std::vector<cv::Point> points; // All the points which is detected as part of the lane
 
-        // OpenCV Stuff Which fills up points.
-        {
-            cv::Mat hsv, blur, raw_mask, eroded_mask, masked, yellow_mask;
-
-            cv_bridge::CvImageConstPtr cv_img = cv_bridge::toCvCopy(msg_left, "bgr8");
-            // TODO: Should we just downscale image?
+        process_image(cv_bridge::toCvCopy(msg, "bgr8"), points, helper.cv,
+                      helper.publish_masked ? &helper.pub.masked : nullptr);
 
 
-            cv::cvtColor(cv_img->image, hsv, cv::COLOR_BGR2HSV);
-            cv::GaussianBlur(hsv, blur, cv::Size(helper.blur_size, helper.blur_size), 0, 0);
-            // Get white pixels
-            cv::inRange(blur, helper.white_lower, helper.white_upper, raw_mask);
+        auto &params = helper.lanes;
 
-            // Flood Fill from the top of the mask to remove the sky in gazebo.
-            cv::floodFill(raw_mask, cv::Point(raw_mask.cols / 2, 2), cv::Scalar(0));
-
-            // Errors in projection increase as we approach the halfway point of the image:
-            // Apply a mask to remove top 60%
-            raw_mask(cv::Rect(0, 0, raw_mask.cols, (int) (raw_mask.rows * helper.rect_frac))) = 0;
-
-
-            // TODO: Very expensive; switch to laser scan
-            std::vector<cv::Point> yellow_points; // Yellow points are part of barrel
-            cv::inRange(blur, cv::Scalar(0, 250, 0), cv::Scalar(180, 255, 255), yellow_mask);
-            cv::findNonZero(yellow_mask, yellow_points);
-            int minx = yellow_mask.cols, maxx = 0;
-            if (!yellow_points.empty()) {
-                for (auto &v : yellow_points) {
-                    minx = std::min(minx, v.x);
-                    maxx = std::max(maxx, v.x);
-                }
-            }
-            if (minx < maxx)
-                raw_mask(cv::Rect(minx, 0, maxx - minx, raw_mask.rows)) = 0;
-
-            cv::erode(raw_mask, eroded_mask, helper.erosion_element, cv::Point(-1, -1), helper.erosion_iter);
-
-            cv_img->image.copyTo(masked, eroded_mask);
-
-
-            if (helper.publish_masked)
-                helper.pub_masked.publish(
-                        cv_bridge::CvImage(cv_img->header, cv_img->encoding, masked).toImageMsg());
-
-
-            cv::findNonZero(eroded_mask, points);
-        }
-
-        // Reduce the num points
-        const static size_t stride = 10; // Iterate over every 20th point
-
-        if (points.size() > 100000 || points.size() <= stride) // Quit on bad num points.
+        if (points.size() > params.max_points || points.size() <= params.stride) // Quit on bad num points.
             return;
 
-        // Downscales the number of points
-        const auto point_strided_end = points.end() - (points.size() % stride); // Last point
-
+        // Reduce the num points by iterating through with a gap of params.stride
+        const auto point_strided_end = points.end() - (points.size() % params.stride); // Last point
 
         // Change the transform to a more useful form.
         tf::Quaternion trans_rot = transform.getRotation();
-        cv::Vec3d trans_vec{trans_rot.x(), trans_rot.y(), trans_rot.z()};
-        double trans_sca = trans_rot.w();
+        cv::Vec3d trans_vector{trans_rot.x(), trans_rot.y(), trans_rot.z()};
+        double trans_scalar = trans_rot.w();
 
         // PC Publishing
-        helper.pc_pub.clear_cloud();
-        //auto[x, y, z] = helper.pc_pub.get_iter(points.size() / stride);
-        auto _pc_iters = helper.pc_pub.get_iter(points.size() / stride);
-        auto x = _pc_iters[0], y = _pc_iters[1], z = _pc_iters[2];
-        helper.pc_pub.header->frame_id = ground_frame;
-        helper.pc_pub.header->stamp = ros::Time::now();
+        helper.pub.pc.clear_cloud();
+        //auto[x, y, z] = helper.pub.pc.get_iter(points.size() / stride);
+        auto _pc_iters = helper.pub.pc.get_iter(points.size() / params.stride);
+        auto &x = _pc_iters[0], &y = _pc_iters[1], &z = _pc_iters[2];
+        helper.pub.pc.header->frame_id = ground_frame;
+        helper.pub.pc.header->stamp = ros::Time::now();
 
 
-        auto &vertices = helper.lane_pub.vertices; // The current path.
+        auto &vertices = helper.pub.lane.vertices; // The current path.
         bool path_updated = false; // Was new point added
 
-        // Stores points ordered and section_wise.
-        std::array<std::vector<std::pair<double, double> >, num_sections> points_vectors;
+        // Stores points section_wise and ordered by increasing horizontal distance.
+        std::array<std::vector<std::pair<double, double> >, num_sections> points_sectioned;
 
         // Stores the perpendicular distance of the point from the section line. This stays sorted.
         std::array<std::vector<double>, num_sections> horiz_dist_vectors;
 
         std::vector<horiz_dist> section_funcs; // Functions that give horizontal distance
-        auto cur_vertice = vertices.end() - 1;
+        auto cur_vertex = vertices.end() - 1;
         for (int i = 0; i < num_sections; i++) {
-            section_funcs.emplace_back(*(cur_vertice), *(cur_vertice - 1));
-            --cur_vertice;
+            section_funcs.emplace_back(*(cur_vertex), *(cur_vertex - 1));
+            --cur_vertex;
         }
         // Note:
         // vertices.end() is an iter right after the last element.
         // *(vertices.end() - 1) ==> Last element.. *(... - 2) ==> second last element
 
-        // Some params
-        static const double max_horiz_dist = 4.5, max_vert_dist = 0.75, epsilon_dist = 0.25, min_new_dist = 0.5, max_new_dist = 4;
-        /* Max_horizontal dist:
+        /* params. :
+         * Max_horizontal dist:
          * if horiz_dist(point) > max ==> Point is skipped
          * Sim for vertical dist
          *
@@ -179,8 +104,8 @@ void callback(const sensor_msgs::ImageConstPtr &msg_left,
 
         //for (const auto &point : points) { // Normal for:range loop requires a messy custom container class for stride.
         auto point_iter = points.begin();
-        for (auto &camera_point = *point_iter; point_iter != point_strided_end;
-             point_iter += stride, camera_point = *point_iter) {
+        for (auto &camera_point = *point_iter;
+             point_iter != point_strided_end; point_iter += params.stride, camera_point = *point_iter) {
             // ___________ Ray is a vector that points from the camera to the pixel: __________
             // Its calculation is pretty simple but is easier to use the image_geometry package.
             /* Basically:
@@ -216,15 +141,17 @@ void callback(const sensor_msgs::ImageConstPtr &msg_left,
             // Rotate ray by using the transform.
             // Kinda black magic on v_p = q * v * q'
             // https://gamedev.stackexchange.com/a/50545/90578
-            cv::Vec3d ray_p = 2.0 * trans_vec.dot(ray) * trans_vec
-                              + (trans_sca * trans_sca - trans_vec.dot(trans_vec)) * ray
-                              + 2.0f * trans_sca * trans_vec.cross(ray);
+            cv::Vec3d ray_p = 2.0 * trans_vector.dot(ray) * trans_vector
+                              + (trans_scalar * trans_scalar - trans_vector.dot(trans_vector)) * ray
+                              + 2.0f * trans_scalar * trans_vector.cross(ray);
 
             if (ray_p[2] == 0) // Horizontal rays. is it > or < for rays facing above the horizon TODO
                 continue;
 
             // Scale factor for ray so it touches the ground
             const double scale = transform.getOrigin().z() / ray_p[2];
+
+            // Get endpoints of ray
             std::pair<double, double> point = std::make_pair(transform.getOrigin().x() - ray_p[0] * scale,
                                                              transform.getOrigin().y() - ray_p[1] * scale);
 
@@ -237,49 +164,57 @@ void callback(const sensor_msgs::ImageConstPtr &msg_left,
             ++z;
 
             // Sort them section wise
-            double dist;
+            double horiz_dist;
             for (int i = 0; i < num_sections; i++) {
-                dist = section_funcs[i](point); // perpendicular dist from ith point from the end.
-                if (dist >= 0) { // i.e. point is to the right of the line i.e. in that section
-                    if (dist > max_horiz_dist) { // Point too far, ignore.
+                horiz_dist = section_funcs[i](point); // perpendicular dist of the  point from the end.
+                if (horiz_dist >= 0) { // i.e. point is to the right of the line i.e. in this section
+                    if (horiz_dist > params.max_horiz_dist) { // Point too far, ignore.
                         break;
                     }
                     // Inserts point and dist to the respective vectors while soring by increasing dist..
-                    const auto it = std::lower_bound(horiz_dist_vectors[i].begin(), horiz_dist_vectors[i].end(), dist);
-                    points_vectors[i].insert(points_vectors[i].begin() + (it - horiz_dist_vectors[i].begin()), point);
-                    horiz_dist_vectors[i].insert(it, dist);
+                    const auto it = std::lower_bound(horiz_dist_vectors[i].begin(), horiz_dist_vectors[i].end(),
+                                                     horiz_dist);
+
+                    points_sectioned[i].insert(points_sectioned[i].begin() + (it - horiz_dist_vectors[i].begin()),
+                                               point);
+                    horiz_dist_vectors[i].insert(it, horiz_dist);
                     break;
                 }
             }
         }
-        points.clear(); // Dont need points anymore, useful are copied to points_vectors.
+        points.clear(); // Dont need points anymore, useful are copied to points_sectioned.
+        // Instead of copying points to points_sectioned, store references there?
 
-        helper.pc_pub.publish(); // Send point cloud
+        helper.pub.pc.publish();
 
         bool recent = false;
+
         // This checks whether we need to append a new point to the path
-        static const double cos_max_angle = 0.8; // 0.81915204428; // cos(35deg)
-        // 1 / std::sqrt(2);// This ensures the new segment is at a very sharp angle.
-        if (!points_vectors[0].empty()) {
+        if (!points_sectioned[0].empty()) {
             auto &pt = vertices.back();
-            auto dit = horiz_dist_vectors[0].end() - 1; // Horizontal distnce
-            for (auto it = points_vectors[0].end() - 1; it != points_vectors[0].begin(); --it, --dit) {
+
+            auto horiz_dist_it = horiz_dist_vectors[0].end() - 1; // Iterator to horizontal distances
+            for (auto it = points_sectioned[0].end() - 1; it != points_sectioned[0].begin(); --it, --horiz_dist_it) {
+                // Loop through points and their horizontal distances
+
                 auto &pt_new = *it;
 
+                // TODO: Square the parameter instead of sqrt-ing the expr
                 double dist = std::sqrt((pt_new.first - pt.first) * (pt_new.first - pt.first) +
                                         (pt_new.second - pt.second) * (pt_new.second - pt.second));
 
                 // If dist comes in the right range, add it to the path.
-                if (min_new_dist < dist) {
-                    if (dist < max_new_dist && *dit > dist * cos_max_angle) {
-                        recent = true;
+                if (params.min_new_dist < dist) {
+                    // TODO: Stop new points from being added backwards..
+                    if (dist < params.max_new_dist && *horiz_dist_it > dist * params.cos_max_new_angle) {
                         vertices.push_back(pt_new);
+                        recent = true;
                         path_updated = true;
+
                         ROS_INFO("Added a new point to path, now %lu vertices", vertices.size());
                         break;
                     }
-                } else
-                    break;
+                } else { break; }
             }
         }
 
@@ -288,36 +223,38 @@ void callback(const sensor_msgs::ImageConstPtr &msg_left,
         for (size_t i = num_sections - (recent ? 1u : 2u); i >= 0 && i < num_sections; i--) {
 
             // Set of points in the current segment
-            auto &points_cur = points_vectors[i + (recent ? 0 : 1)];
+            auto &current_points = points_sectioned[i + (recent ? 0 : 1)];
 
-            if (points_cur.empty()) // No points in this segment
+            if (current_points.empty()) // No points in this segment
                 continue;
 
-            // The index of start vertice for this segment
+            // The index of start vertex of the segment
             const size_t start_index = (vertices.end() - (1 + i + 1)) - vertices.begin();
 
-            std::vector<double> dists; // Vector of perpendicular dists
-            dists.reserve(points_cur.size());
+            std::vector<double> vdists; // Vector of vertical distances
+            vdists.reserve(current_points.size());
 
             // The start and end vertices of the segment
             auto start = *(vertices.begin() + start_index);
             auto end = *(vertices.begin() + start_index + 1);
 
-            vert_dist dist(start, end); // The Perpendicular dist func
+            vert_dist dist(end, start);
+            double max_vert_dist = 0, cur_vert_dist;
+            std::pair<double, double> &max_pt = current_points.front();
 
-            double max_dist = 0, cur_dist; // Find point with max distance from segment (but within max_vert_dist)
-            std::pair<double, double> &max_pt = points_cur.front();
-            for (const auto &pt : points_cur) {
-                cur_dist = dist(pt);
-                if (cur_dist > max_vert_dist)
+            // Find point with max distance from segment (but within max_vert_dist)
+            for (const auto &pt : current_points) {
+                cur_vert_dist = dist(pt);
+                if (cur_vert_dist > params.max_vert_dist)
                     continue;
-                if (cur_dist > max_dist) {
-                    max_dist = cur_dist;
+                if (cur_vert_dist > max_vert_dist) {
+                    max_vert_dist = cur_vert_dist;
                     max_pt = pt;
                 }
             }
 
-            if (max_dist > epsilon_dist) {
+            // Check  if that point should be added.
+            if (max_vert_dist > params.epsilon_dist) {
                 vertices.insert(vertices.begin() + start_index + 1, max_pt);
                 path_updated = true;
                 ROS_INFO("Added a vertice to path, now %lu vertices.", vertices.size());
@@ -325,19 +262,70 @@ void callback(const sensor_msgs::ImageConstPtr &msg_left,
                 // i.e. if the point after this goes backwards,  delete it.
                 const auto prev_pt = vertices.begin() + start_index + 1;
                 const auto next_pt = vertices.begin() + start_index + 2;
-                if (horiz_dist(max_pt, *prev_pt)(*next_pt) <= -0.1 * std::abs(vert_dist(max_pt, *prev_pt)(*next_pt))) {
+
+                if (horiz_dist(max_pt, *prev_pt)(*next_pt) <=
+                    params.cos_min_angle_reverse_pt * vert_dist(max_pt, *prev_pt)(*next_pt)) {
                     vertices.erase(vertices.begin() + start_index + 2);
                     ROS_ERROR("Removed a backwards point.");
                 }
+
+                // TODO: Stop new points from being added backwards..
             }
         }
 
         // Update the path if required.
-        if (path_updated) helper.lane_pub.publish();
+        if (path_updated) helper.pub.lane.publish();
 
     } catch (const std::exception &e) {
         ROS_ERROR("Callback failed: %s", e.what());
     }
+}
+
+void process_image(const cv_bridge::CvImageConstPtr &cv_img, std::vector<cv::Point> &points,
+                   const Helpers::CVParams &params, image_transport::Publisher *cv_pub) {
+    cv::Mat hsv, blur, raw_mask, eroded_mask, masked, barrel_mask;
+
+    // TODO: Should we just downscale image?
+
+    cv::cvtColor(cv_img->image, hsv, cv::COLOR_BGR2HSV);
+    cv::GaussianBlur(hsv, blur, cv::Size(params.blur_size, params.blur_size), 0, 0);
+    // Get white pixels
+    cv::inRange(blur, params.white_lower, params.white_upper, raw_mask);
+
+    // Flood Fill from the top of the mask to remove the sky in gazebo.
+    cv::floodFill(raw_mask, cv::Point(raw_mask.cols / 2, 2), cv::Scalar(0));
+
+    // Errors in projection increase as we approach the halfway point of the image:
+    // Apply a mask to remove top 60%
+    raw_mask(cv::Rect(0, 0, raw_mask.cols, (int) (raw_mask.rows * params.rect_frac))) = 0;
+
+
+    // TODO: Very expensive; switch to laser scan
+    std::vector<cv::Point> barrel_points; // Yellow points are part of barrel
+    cv::inRange(blur, params.barrel_lower, params.barrel_upper, barrel_mask);
+    cv::findNonZero(barrel_mask, barrel_points);
+    if (!barrel_points.empty()) {
+        int minx = barrel_mask.cols, maxx = 0;
+
+        for (auto &v : barrel_points) {
+            minx = std::min(minx, v.x);
+            maxx = std::max(maxx, v.x);
+        }
+
+        if (minx < maxx)
+            raw_mask(cv::Rect(minx, 0, maxx - minx, raw_mask.rows)) = 0;
+    }
+
+
+    cv::erode(raw_mask, eroded_mask, params.erosion_element, cv::Point(-1, -1), params.erosion_iter);
+
+    cv_img->image.copyTo(masked, eroded_mask);
+
+
+    if (cv_pub)
+        cv_pub->publish(cv_bridge::CvImage(cv_img->header, cv_img->encoding, masked).toImageMsg());
+
+    cv::findNonZero(eroded_mask, points);
 }
 
 // This allows us to change params of the node while it is running: see cfg/lanes.cfg.
@@ -348,37 +336,37 @@ void callback(const sensor_msgs::ImageConstPtr &msg_left,
 void dynamic_reconfigure_callback(const igvc_bot::LanesConfig &config, const uint32_t &level, Helpers &helpers) {
     if (level & 1u << 0u) {
         ROS_INFO("Reconfiguring lower level.");
-        helpers.white_lower = cv::Scalar(config.h_lower, config.s_lower, config.v_lower);
+        helpers.cv.white_lower = cv::Scalar(config.h_lower, config.s_lower, config.v_lower);
     }
 
     if (level & 1u << 1u) {
         ROS_INFO("Reconfiguring upper level.");
-        helpers.white_upper = cv::Scalar(config.h_upper, config.s_upper, config.v_upper);
+        helpers.cv.white_upper = cv::Scalar(config.h_upper, config.s_upper, config.v_upper);
     }
 
     if (level & 1u << 2u) {
         ROS_INFO("Reconfiguring erosion kernel.");
-        helpers.erosion_size = config.erosion_size;
-        helpers.erosion_iter = config.erosion_iter;
-        helpers.erosion_element = cv::getStructuringElement(cv::MorphShapes::MORPH_ELLIPSE,
-                                                            cv::Size(2 * helpers.erosion_size + 1,
-                                                                     2 * helpers.erosion_size + 1));
+        helpers.cv.erosion_size = config.erosion_size;
+        helpers.cv.erosion_iter = config.erosion_iter;
+        helpers.cv.erosion_element = cv::getStructuringElement(cv::MorphShapes::MORPH_ELLIPSE,
+                                                               cv::Size(2 * helpers.cv.erosion_size + 1,
+                                                                        2 * helpers.cv.erosion_size + 1));
     }
 
     if (level & 1u << 3u) {
         ROS_INFO("Reconfiguring masked publishing.");
         helpers.publish_masked = config.publish_masked;
-        // Deconstruct the helpers.pub_masked
+        // Deconstruct the helpers.pub.masked
     }
 
     if (level & 1u << 4u) {
         ROS_INFO("Reconfiguring blur size.");
-        helpers.blur_size = 2 * config.blur_size + 1;
+        helpers.cv.blur_size = 2 * config.blur_size + 1;
     }
 
     if (level & 1u << 5u) {
         ROS_INFO("Reconfiguring rect mask");
-        helpers.rect_frac = config.upper_mask_percent / 100.0;
+        helpers.cv.rect_frac = config.upper_mask_percent / 100.0;
     }
 }
 
@@ -393,22 +381,34 @@ int main(int argc, char **argv) {
     image_transport::ImageTransport imageTransport(nh);
 
     Helpers helper{
-            imageTransport.advertise(topic_masked, 1),
-            {nh.advertise<sensor_msgs::PointCloud2>(pc_topic, 2)},
-            {nh.advertise<igvc_bot::Lane>(lane_topic, 10), num_sections},
+            { // Publishers:
+                    imageTransport.advertise(topic_masked, 1),
+                    {nh.advertise<sensor_msgs::PointCloud2>(pc_topic, 2)},
+                    {nh.advertise<igvc_bot::Lane>(lane_topic, 10), num_sections}
+            },
 
-            (0, 0, 0),
-            (180, 40, 255),
+            { // CV Params Sane defaults
+                    (0, 0, 0), (180, 40, 255),
+                    cv::Scalar(0, 250, 0), cv::Scalar(180, 255, 255),
 
-            0.6,
+                    0.6,
 
-            2,
-            1,
-            cv::getStructuringElement(cv::MorphShapes::MORPH_ELLIPSE, cv::Size(2 * 3 + 1, 2 * 3 + 1)),
+                    2,
+                    1,
+                    cv::getStructuringElement(cv::MorphShapes::MORPH_ELLIPSE, cv::Size(2 * 3 + 1, 2 * 3 + 1)),
 
-            7,
+                    7
+            },
 
             false,
+
+            { // Lanes Params Sane defaults
+                    100000,
+                    10,
+                    0.25, 0.75,
+                    4.5, 0.5, 4,
+                    0.8, 0.2
+            }
     };
 
     sensor_msgs::CameraInfo::ConstPtr camera_info = ros::topic::waitForMessage<sensor_msgs::CameraInfo>(
@@ -428,9 +428,9 @@ int main(int argc, char **argv) {
         initial_y.resize(initial_x.size());
 
         std::transform(initial_x.begin(), initial_x.end(), initial_y.begin(),
-                       std::back_inserter(helper.lane_pub.vertices),
+                       std::back_inserter(helper.pub.lane.vertices),
                        [](const double &x, const double &y) { return std::make_pair(x, y); });
-        helper.lane_pub.publish();
+        helper.pub.lane.publish();
     }
 
     // For the dynamic parameter reconfiguration. see the function dynamic_reconfigure_callback
@@ -442,8 +442,10 @@ int main(int argc, char **argv) {
 
 
     // Adds the callback
-    image_transport::Subscriber sub = imageTransport.subscribe(topic_image, 2,
-                                                               boost::bind(&callback, _1, boost::ref(helper)));
+    image_transport::Subscriber sub = imageTransport.subscribe(
+            topic_image, 2,
+            boost::bind(&callback, _1, boost::ref(helper))
+    );
 
 
     ROS_INFO("Spinning...");
