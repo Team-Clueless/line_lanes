@@ -12,12 +12,6 @@
 #include <dynamic_reconfigure/server.h>
 #include <igvc_bot/LanesConfig.h>
 
-#include <vector>
-#include <functional>
-
-
-#include <igvc_bot/Lane.h>
-
 #include <igvc_bot/LaneHelpers.h>
 
 const char *topic_image = "image_rect_color";
@@ -40,6 +34,8 @@ void callback(const sensor_msgs::ImageConstPtr &msg,
               Helpers &helper) {
 
     try {
+        std::lock_guard<std::mutex> lock(helper.mutex);
+
         // Get transform asap for something from the right time without messing around with tf.
         tf::StampedTransform transform;
         helper.listener.lookupTransform(ground_frame, helper.cameraModel.tfFrame(), ros::Time(0),
@@ -333,40 +329,22 @@ void process_image(const cv_bridge::CvImageConstPtr &cv_img, std::vector<cv::Poi
 // This also auto loads any params initially set in the param server.
 // The the ros page for 'dynamic_reconfigure'
 //
-void dynamic_reconfigure_callback(const igvc_bot::LanesConfig &config, const uint32_t &level, Helpers &helpers) {
+void dynamic_reconfigure_callback(const igvc_bot::LanesConfig &config, const uint32_t &level, Helpers &helper) {
+    std::lock_guard<std::mutex> lock(helper.mutex);
+
     if (level & 1u << 0u) {
-        ROS_INFO("Reconfiguring lower level.");
-        helpers.cv.white_lower = cv::Scalar(config.h_lower, config.s_lower, config.v_lower);
-    }
+        ROS_INFO("Reconfiguring lanes params.");
+        auto &params = helper.cv;
 
-    if (level & 1u << 1u) {
-        ROS_INFO("Reconfiguring upper level.");
-        helpers.cv.white_upper = cv::Scalar(config.h_upper, config.s_upper, config.v_upper);
-    }
-
-    if (level & 1u << 2u) {
-        ROS_INFO("Reconfiguring erosion kernel.");
-        helpers.cv.erosion_size = config.erosion_size;
-        helpers.cv.erosion_iter = config.erosion_iter;
-        helpers.cv.erosion_element = cv::getStructuringElement(cv::MorphShapes::MORPH_ELLIPSE,
-                                                               cv::Size(2 * helpers.cv.erosion_size + 1,
-                                                                        2 * helpers.cv.erosion_size + 1));
-    }
-
-    if (level & 1u << 3u) {
-        ROS_INFO("Reconfiguring masked publishing.");
-        helpers.publish_masked = config.publish_masked;
-        // Deconstruct the helpers.pub.masked
-    }
-
-    if (level & 1u << 4u) {
-        ROS_INFO("Reconfiguring blur size.");
-        helpers.cv.blur_size = 2 * config.blur_size + 1;
-    }
-
-    if (level & 1u << 5u) {
-        ROS_INFO("Reconfiguring rect mask");
-        helpers.cv.rect_frac = config.upper_mask_percent / 100.0;
+        params.white_lower = cv::Scalar(config.h_lower, config.s_lower, config.v_lower);
+        params.white_upper = cv::Scalar(config.h_upper, config.s_upper, config.v_upper);
+        params.erosion_size = config.erosion_size;
+        params.erosion_iter = config.erosion_iter;
+        params.erosion_element = cv::getStructuringElement(cv::MorphShapes::MORPH_ELLIPSE,
+                                                           cv::Size(2 * params.erosion_size + 1,
+                                                                    2 * params.erosion_size + 1));
+        params.blur_size = 2 * config.blur_size + 1;
+        params.rect_frac = config.upper_mask_percent / 100.0;
     }
 }
 
@@ -403,10 +381,11 @@ int main(int argc, char **argv) {
             false,
 
             { // Lanes Params Sane defaults
-                    100000,
-                    10,
-                    0.25, 0.75,
-                    4.5, 0.5, 4,
+                    (size_t) getParam("lanes/max_points", 10000),
+                    (size_t) getParam("lanes/stride", 20),
+                    getParam("lanes/epsilon_dist", 0.25),
+                    getParam("lanes/max_vert_dist", 0.74),
+                    getParam("lanes/max_horiz_dist", 4.5), 0.5, 4,
                     0.8, 0.2
             }
     };
@@ -434,7 +413,7 @@ int main(int argc, char **argv) {
     }
 
     // For the dynamic parameter reconfiguration. see the function dynamic_reconfigure_callback
-    dynamic_reconfigure::Server<igvc_bot::LanesConfig> server;
+    dynamic_reconfigure::Server <igvc_bot::LanesConfig> server;
     dynamic_reconfigure::Server<igvc_bot::LanesConfig>::CallbackType dynamic_reconfigure_callback_function = boost::bind(
             &dynamic_reconfigure_callback, _1, _2, boost::ref(helper));
     server.setCallback(dynamic_reconfigure_callback_function);
