@@ -5,6 +5,11 @@
 #include <igvc_bot/Lane.h>
 #include <sensor_msgs/PointCloud2.h>
 #include <sensor_msgs/point_cloud2_iterator.h>
+#include <mutex>
+
+template<typename T>
+T getParam(const std::string &key, T default_value);
+
 
 class PCPublisher {
     ros::Publisher _pub;
@@ -101,7 +106,8 @@ struct Helpers {
     // For projecting the image onto the ground.
     image_geometry::PinholeCameraModel cameraModel;
     tf::TransformListener listener;
-};
 
+    std::mutex mutex;
+};
 
 #endif //IGVC_BOT_LANEHELPERS_H
