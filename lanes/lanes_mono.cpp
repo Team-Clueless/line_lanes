@@ -28,7 +28,12 @@ const size_t num_mutable_points = 2;
 const size_t num_sections = num_mutable_points + 1;
 
 void process_image(const cv_bridge::CvImageConstPtr &cv_img, std::vector<cv::Point> &points,
-                   const Helpers::CVParams &params, image_transport::Publisher *cv_pub);
+                   const Helpers::CVParams &params, image_transport::Publisher *cv_pub,
+                   std::vector<cv::Point> *hough = nullptr);
+
+double dist_sq(const std::pair<double, double> &p1, const std::pair<double, double> &p2) {
+    return std::pow(p1.first - p2.first, 2) + std::pow(p1.second - p2.second, 2);
+}
 
 void callback(const sensor_msgs::ImageConstPtr &msg,
               Helpers &helper) {
@@ -41,67 +46,15 @@ void callback(const sensor_msgs::ImageConstPtr &msg,
         helper.listener.lookupTransform(ground_frame, helper.cameraModel.tfFrame(), ros::Time(0),
                                         transform);
 
-        std::vector<cv::Point> points; // All the points which is detected as part of the lane
-
-        process_image(cv_bridge::toCvCopy(msg, "bgr8"), points, helper.cv,
-                      &helper.pub.masked);
-
-
-        auto &params = helper.lanes;
-
-        if (points.size() > params.max_points || points.size() <= params.stride) // Quit on bad num points.
-            return;
-
-        // Reduce the num points by iterating through with a gap of params.stride
-        const auto point_strided_end = points.end() - (points.size() % params.stride); // Last point
-
         // Change the transform to a more useful form.
         tf::Quaternion trans_rot = transform.getRotation();
         cv::Vec3d trans_vector{trans_rot.x(), trans_rot.y(), trans_rot.z()};
         double trans_scalar = trans_rot.w();
 
-        // PC Publishing
-        helper.pub.pc.clear_cloud();
-        //auto[x, y, z] = helper.pub.pc.get_iter(points.size() / stride);
-        auto _pc_iters = helper.pub.pc.get_iter(points.size() / params.stride);
-        auto &x = _pc_iters[0], &y = _pc_iters[1], &z = _pc_iters[2];
-        helper.pub.pc.header->frame_id = ground_frame;
-        helper.pub.pc.header->stamp = ros::Time::now();
 
-
-        auto &vertices = helper.pub.lane.vertices; // The current path.
-        bool path_updated = false; // Was new point added
-
-        // Stores points section_wise and ordered by increasing horizontal distance.
-        std::array<std::vector<std::pair<double, double> >, num_sections> points_sectioned;
-
-        // Stores the perpendicular distance of the point from the section line. This stays sorted.
-        std::array<std::vector<double>, num_sections> horiz_dist_vectors;
-
-        std::vector<horiz_dist> section_funcs; // Functions that give horizontal distance
-        auto cur_vertex = vertices.end() - 1;
-        for (int i = 0; i < num_sections; i++) {
-            section_funcs.emplace_back(*(cur_vertex), *(cur_vertex - 1));
-            --cur_vertex;
-        }
-        // Note:
-        // vertices.end() is an iter right after the last element.
-        // *(vertices.end() - 1) ==> Last element.. *(... - 2) ==> second last element
-
-        /* params. :
-         * Max_horizontal dist:
-         * if horiz_dist(point) > max ==> Point is skipped
-         * Sim for vertical dist
-         *
-         * epsilon_dist: if distance of point from existing segment > epsilon dist ===> Then add that as a new vertice.
-         *
-         * min/max new_dist: For a point to be added at the end of the existing path, it must satisfy the above conditions
-         */
-
-        //for (const auto &point : points) { // Normal for:range loop requires a messy custom container class for stride.
-        auto point_iter = points.begin();
-        for (auto &camera_point = *point_iter;
-             point_iter != point_strided_end; point_iter += params.stride, camera_point = *point_iter) {
+        // Projects a camera pixel to ground [ground_frame.z = 0]
+        auto pixel_to_point = [&helper, &transform, &trans_rot, &trans_vector, &trans_scalar](
+                const cv::Point &camera_point) -> std::pair<double, double> {
             // ___________ Ray is a vector that points from the camera to the pixel: __________
             // Its calculation is pretty simple but is easier to use the image_geometry package.
             /* Basically:
@@ -141,15 +94,104 @@ void callback(const sensor_msgs::ImageConstPtr &msg,
                               + (trans_scalar * trans_scalar - trans_vector.dot(trans_vector)) * ray
                               + 2.0f * trans_scalar * trans_vector.cross(ray);
 
-            if (ray_p[2] == 0) // Horizontal rays. is it > or < for rays facing above the horizon TODO
-                continue;
+            /*if (ray_p[2] == 0) // Horizontal rays. is it > or < for rays facing above the horizon TODO
+                continue;*/
 
             // Scale factor for ray so it touches the ground
             const double scale = transform.getOrigin().z() / ray_p[2];
 
             // Get endpoints of ray
-            std::pair<double, double> point = std::make_pair(transform.getOrigin().x() - ray_p[0] * scale,
-                                                             transform.getOrigin().y() - ray_p[1] * scale);
+            return std::make_pair(transform.getOrigin().x() - ray_p[0] * scale,
+                                  transform.getOrigin().y() - ray_p[1] * scale);
+        };
+
+        auto &vertices = helper.pub.lane.vertices;
+        bool path_updated = false; // Was new point added
+
+
+        static const double max_camera_dist_sq = 8 * 8;
+        if (helper.mode == helper.MODIFYING &&
+            dist_sq(vertices.back(), {transform.getOrigin().x(), transform.getOrigin().y()}) > max_camera_dist_sq) {
+
+            helper.mode = helper.SEARCHING;
+            ROS_ERROR("Cant find lane, switching to searching mode.");
+        }
+
+        std::vector<cv::Point> points; // All the points which is detected as part of the lane
+
+        if (helper.mode == helper.SEARCHING) {
+            std::vector<cv::Point> endpixels;
+            process_image(cv_bridge::toCvCopy(msg, "bgr8"), points, helper.cv,
+                          &helper.pub.masked, &endpixels);
+
+            if (endpixels.size() == 2) { // Line Found
+                // TODO: Check that this doesnt intersect with the other lane. Give actions to the costmap layers.
+                helper.mode = helper.MODIFYING;
+
+                auto p0 = pixel_to_point(endpixels[0]);
+                auto p1 = pixel_to_point(endpixels[1]);
+
+                const auto d0 = dist_sq(p0, vertices.back());
+                const auto d1 = dist_sq(p1, vertices.back());
+                vertices.push_back(d0 >= d1 ? p1 : p0);
+                vertices.push_back(d0 >= d1 ? p0 : p1);
+
+                path_updated = true;
+                ROS_ERROR("Found lane from line of length %f", std::sqrt(dist_sq(p0, p1)));
+            }
+        } else {
+            process_image(cv_bridge::toCvCopy(msg, "bgr8"), points, helper.cv, &helper.pub.masked);
+        }
+
+
+        auto &params = helper.lanes;
+
+        if (points.size() > params.max_points || points.size() <= params.stride) // Quit on bad num points.
+            return;
+
+        // Reduce the num points by iterating through with a gap of params.stride
+        const auto point_strided_end = points.end() - (points.size() % params.stride); // Last point
+
+        // PC Publishing
+        helper.pub.pc.clear_cloud();
+        //auto[x, y, z] = helper.pub.pc.get_iter(points.size() / stride);
+        auto _pc_iters = helper.pub.pc.get_iter(points.size() / params.stride);
+        auto &x = _pc_iters[0], &y = _pc_iters[1], &z = _pc_iters[2];
+        helper.pub.pc.header->frame_id = ground_frame;
+        helper.pub.pc.header->stamp = ros::Time::now();
+
+
+        // Stores points section_wise and ordered by increasing horizontal distance.
+        std::array<std::vector<std::pair<double, double> >, num_sections> points_sectioned;
+
+        // Stores the perpendicular distance of the point from the section line. This stays sorted.
+        std::array<std::vector<double>, num_sections> horiz_dist_vectors;
+
+        std::vector<horiz_dist> section_funcs; // Functions that give horizontal distance
+        auto cur_vertex = vertices.end() - 1;
+        for (int i = 0; i < num_sections; i++) {
+            section_funcs.emplace_back(*(cur_vertex), *(cur_vertex - 1));
+            --cur_vertex;
+        }
+        // Note:
+        // vertices.end() is an iter right after the last element.
+        // *(vertices.end() - 1) ==> Last element.. *(... - 2) ==> second last element
+
+        /* params. :
+         * Max_horizontal dist:
+         * if horiz_dist(point) > max ==> Point is skipped
+         * Sim for vertical dist
+         *
+         * epsilon_dist: if distance of point from existing segment > epsilon dist ===> Then add that as a new vertice.
+         *
+         * min/max new_dist: For a point to be added at the end of the existing path, it must satisfy the above conditions
+         */
+
+        //for (const auto &point : points) { // Normal for:range loop requires a messy custom container class for stride.
+
+        for (auto point_iter = points.begin(); point_iter != point_strided_end; point_iter += params.stride) {
+
+            auto point = pixel_to_point(*point_iter);
 
             // Add to point cloud
             *x = point.first;
@@ -160,21 +202,23 @@ void callback(const sensor_msgs::ImageConstPtr &msg,
             ++z;
 
             // Sort them section wise
-            double horiz_dist;
-            for (int i = 0; i < num_sections; i++) {
-                horiz_dist = section_funcs[i](point); // perpendicular dist of the  point from the end.
-                if (horiz_dist >= 0) { // i.e. point is to the right of the line i.e. in this section
-                    if (horiz_dist > params.max_horiz_dist) { // Point too far, ignore.
+            if (helper.mode == helper.MODIFYING) {
+                double horiz_dist;
+                for (int i = 0; i < num_sections; i++) {
+                    horiz_dist = section_funcs[i](point); // perpendicular dist of the  point from the end.
+                    if (horiz_dist >= 0) { // i.e. point is to the right of the line i.e. in this section
+                        if (horiz_dist > params.max_horiz_dist) { // Point too far, ignore.
+                            break;
+                        }
+                        // Inserts point and dist to the respective vectors while soring by increasing dist..
+                        const auto it = std::lower_bound(horiz_dist_vectors[i].begin(), horiz_dist_vectors[i].end(),
+                                                         horiz_dist);
+
+                        points_sectioned[i].insert(points_sectioned[i].begin() + (it - horiz_dist_vectors[i].begin()),
+                                                   point);
+                        horiz_dist_vectors[i].insert(it, horiz_dist);
                         break;
                     }
-                    // Inserts point and dist to the respective vectors while soring by increasing dist..
-                    const auto it = std::lower_bound(horiz_dist_vectors[i].begin(), horiz_dist_vectors[i].end(),
-                                                     horiz_dist);
-
-                    points_sectioned[i].insert(points_sectioned[i].begin() + (it - horiz_dist_vectors[i].begin()),
-                                               point);
-                    horiz_dist_vectors[i].insert(it, horiz_dist);
-                    break;
                 }
             }
         }
@@ -182,6 +226,20 @@ void callback(const sensor_msgs::ImageConstPtr &msg,
         // Instead of copying points to points_sectioned, store references there?
 
         helper.pub.pc.publish();
+        if (helper.mode == helper.SEARCHING)
+            return;
+
+        /* "Heruistics"?
+         *
+         * 1. Points' perpendicular distance from segment / perpendicular and vertex is within a range.
+         * 2. Points whose perpendicular distance from a segment is above a threshold are inserted into the path.
+         *    These points must also have a horizontal_dist : vertical_dist ratio greater than a threshold
+         * 3. If after addition of a new point, the two created segments form a sharp angle, the vertex after the
+         *    inserted one is removed.
+         * 4. New points are inserted at the end of the path if they lie within a certain distance and angle of the
+         *    most recent segment.
+         *
+         */
 
         bool recent = false;
 
@@ -190,7 +248,8 @@ void callback(const sensor_msgs::ImageConstPtr &msg,
             auto &pt = vertices.back();
 
             auto horiz_dist_it = horiz_dist_vectors[0].end() - 1; // Iterator to horizontal distances
-            for (auto it = points_sectioned[0].end() - 1; it != points_sectioned[0].begin(); --it, --horiz_dist_it) {
+            for (auto it = points_sectioned[0].end() - 1;
+                 it != points_sectioned[0].begin(); --it, --horiz_dist_it) {
                 // Loop through points and their horizontal distances
 
                 auto &pt_new = *it;
@@ -253,7 +312,7 @@ void callback(const sensor_msgs::ImageConstPtr &msg,
             if (max_vert_dist > params.epsilon_dist) {
                 vertices.insert(vertices.begin() + start_index + 1, max_pt);
                 path_updated = true;
-                ROS_INFO("Added a vertice to path, now %lu vertices.", vertices.size());
+                ROS_INFO("Added a vertex to path, now %lu vertices.", vertices.size());
 
                 // i.e. if the point after this goes backwards,  delete it.
                 const auto prev_pt = vertices.begin() + start_index + 1;
@@ -262,7 +321,7 @@ void callback(const sensor_msgs::ImageConstPtr &msg,
                 if (horiz_dist(max_pt, *prev_pt)(*next_pt) <=
                     params.cos_min_angle_reverse_pt * vert_dist(max_pt, *prev_pt)(*next_pt)) {
                     vertices.erase(vertices.begin() + start_index + 2);
-                    ROS_ERROR("Removed a backwards point.");
+                    ROS_WARN("Removed a backwards point.");
                 }
 
                 // TODO: Stop new points from being added backwards..
@@ -278,7 +337,8 @@ void callback(const sensor_msgs::ImageConstPtr &msg,
 }
 
 void process_image(const cv_bridge::CvImageConstPtr &cv_img, std::vector<cv::Point> &points,
-                   const Helpers::CVParams &params, image_transport::Publisher *cv_pub) {
+                   const Helpers::CVParams &params, image_transport::Publisher *cv_pub,
+                   std::vector<cv::Point> *hough) {
     cv::Mat hsv, blur, raw_mask, eroded_mask, masked, barrel_mask;
 
     // TODO: Should we just downscale image?
@@ -316,6 +376,15 @@ void process_image(const cv_bridge::CvImageConstPtr &cv_img, std::vector<cv::Poi
 
     cv_img->image.copyTo(masked, eroded_mask);
 
+    if (hough) {
+        std::vector<cv::Vec4i> lines;
+        cv::HoughLinesP(eroded_mask, lines, 10, CV_PI / 180, 250, 80, 10);
+        ROS_ERROR("No lines detected: %lu", lines.size());
+        if (!lines.empty()) {
+            hough->emplace_back(lines[0][0], lines[0][1]);
+            hough->emplace_back(lines[0][2], lines[0][3]);
+        }
+    }
 
     if (params.publish_masked && cv_pub)
         cv_pub->publish(cv_bridge::CvImage(cv_img->header, cv_img->encoding, masked).toImageMsg());
@@ -383,6 +452,7 @@ int main(int argc, char **argv) {
                        std::back_inserter(helper.pub.lane.vertices),
                        [](const double &x, const double &y) { return std::make_pair(x, y); });
         helper.pub.lane.publish();
+        helper.mode = helper.MODIFYING;
     }
 
     if (helper.dynamic_reconfigure) {
