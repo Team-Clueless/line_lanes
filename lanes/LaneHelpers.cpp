@@ -1,13 +1,5 @@
 #include "igvc_bot/LaneHelpers.h"
 
-template<typename T>
-T getParam(const std::string &key, T default_value) {
-    T val;
-    if (ros::param::get(key, val))
-        return val;
-    return default_value;
-}
-
 LanePublisher::LanePublisher(const ros::Publisher &pub, const size_t &points_to_keep) : _pub(pub),
                                                                                         _num_to_keep(points_to_keep),
                                                                                         _lane(),
@@ -90,4 +82,9 @@ void PCPublisher::clear_cloud() {
 
 void PCPublisher::publish() {
     _pub.publish(pc);
+}
+
+cv::Scalar getCvScalar(std::vector<double> v) {
+    v.resize(3);
+    return {v[0], v[1], v[2]};
 }

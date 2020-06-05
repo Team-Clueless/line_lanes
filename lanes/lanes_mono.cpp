@@ -44,7 +44,7 @@ void callback(const sensor_msgs::ImageConstPtr &msg,
         std::vector<cv::Point> points; // All the points which is detected as part of the lane
 
         process_image(cv_bridge::toCvCopy(msg, "bgr8"), points, helper.cv,
-                      helper.publish_masked ? &helper.pub.masked : nullptr);
+                      &helper.pub.masked);
 
 
         auto &params = helper.lanes;
@@ -282,7 +282,6 @@ void process_image(const cv_bridge::CvImageConstPtr &cv_img, std::vector<cv::Poi
     cv::Mat hsv, blur, raw_mask, eroded_mask, masked, barrel_mask;
 
     // TODO: Should we just downscale image?
-
     cv::cvtColor(cv_img->image, hsv, cv::COLOR_BGR2HSV);
     cv::GaussianBlur(hsv, blur, cv::Size(params.blur_size, params.blur_size), 0, 0);
     // Get white pixels
@@ -318,7 +317,7 @@ void process_image(const cv_bridge::CvImageConstPtr &cv_img, std::vector<cv::Poi
     cv_img->image.copyTo(masked, eroded_mask);
 
 
-    if (cv_pub)
+    if (params.publish_masked && cv_pub)
         cv_pub->publish(cv_bridge::CvImage(cv_img->header, cv_img->encoding, masked).toImageMsg());
 
     cv::findNonZero(eroded_mask, points);
@@ -358,37 +357,11 @@ int main(int argc, char **argv) {
     // For receiving and publishing the images in an easy way.
     image_transport::ImageTransport imageTransport(nh);
 
-    Helpers helper{
-            { // Publishers:
-                    imageTransport.advertise(topic_masked, 1),
-                    {nh.advertise<sensor_msgs::PointCloud2>(pc_topic, 2)},
-                    {nh.advertise<igvc_bot::Lane>(lane_topic, 10), num_sections}
-            },
-
-            { // CV Params Sane defaults
-                    (0, 0, 0), (180, 40, 255),
-                    cv::Scalar(0, 250, 0), cv::Scalar(180, 255, 255),
-
-                    0.6,
-
-                    2,
-                    1,
-                    cv::getStructuringElement(cv::MorphShapes::MORPH_ELLIPSE, cv::Size(2 * 3 + 1, 2 * 3 + 1)),
-
-                    7
-            },
-
-            false,
-
-            { // Lanes Params Sane defaults
-                    (size_t) getParam("lanes/max_points", 10000),
-                    (size_t) getParam("lanes/stride", 20),
-                    getParam("lanes/epsilon_dist", 0.25),
-                    getParam("lanes/max_vert_dist", 0.74),
-                    getParam("lanes/max_horiz_dist", 4.5), 0.5, 4,
-                    0.8, 0.2
-            }
-    };
+    Helpers helper({
+                           imageTransport.advertise(topic_masked, 1),
+                           {nh.advertise<sensor_msgs::PointCloud2>(pc_topic, 2)},
+                           {nh.advertise<igvc_bot::Lane>(lane_topic, 10), num_sections}
+                   });
 
     sensor_msgs::CameraInfo::ConstPtr camera_info = ros::topic::waitForMessage<sensor_msgs::CameraInfo>(
             topic_camera_info);
@@ -412,12 +385,13 @@ int main(int argc, char **argv) {
         helper.pub.lane.publish();
     }
 
-    // For the dynamic parameter reconfiguration. see the function dynamic_reconfigure_callback
-    dynamic_reconfigure::Server <igvc_bot::LanesConfig> server;
-    dynamic_reconfigure::Server<igvc_bot::LanesConfig>::CallbackType dynamic_reconfigure_callback_function = boost::bind(
-            &dynamic_reconfigure_callback, _1, _2, boost::ref(helper));
-    server.setCallback(dynamic_reconfigure_callback_function);
-
+    if (helper.dynamic_reconfigure) {
+        // For the dynamic parameter reconfiguration. see the function dynamic_reconfigure_callback
+        dynamic_reconfigure::Server<igvc_bot::LanesConfig> server({"cv"});
+        dynamic_reconfigure::Server<igvc_bot::LanesConfig>::CallbackType dynamic_reconfigure_callback_function = boost::bind(
+                &dynamic_reconfigure_callback, _1, _2, boost::ref(helper));
+        server.setCallback(dynamic_reconfigure_callback_function);
+    }
 
 
     // Adds the callback
