@@ -148,6 +148,11 @@ struct Helpers {
 
     std::mutex mutex;
 
+    enum Mode {
+        MODIFYING, // Have some vertices
+        SEARCHING  // Need to find vertices
+    } mode{Mode::SEARCHING};
+
     Helpers(Publishers pubs) : pub(std::move(pubs)), mutex() {}
 };
 
