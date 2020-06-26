@@ -1,0 +1,30 @@
+<?xml version="1.0"?>
+<package format="2">
+    <name>line_lanes</name>
+    <version>0.0.0</version>
+    <description>The line_lanes package</description>
+
+    <maintainer email="suraj@todo.todo">suraj</maintainer>
+
+
+    <license>GPLv3</license>
+    <!-- <author email="jane.doe@example.com">Jane Doe</author> -->
+
+    <buildtool_depend>catkin</buildtool_depend>
+
+    <build_depend>sensor_messages</build_depend>
+
+
+    <depend>roscpp</depend>
+    <depend>rospy</depend>
+    
+    <depend>visual_opencv</depend>
+    <depend>costmap_2d</depend>
+
+    <build_depend>message_generation</build_depend>
+    <exec_depend>message_runtime</exec_depend>
+
+    <export>
+        <costmap_2d plugin="${prefix}/costmap_plugins.xml"/>
+    </export>
+</package>

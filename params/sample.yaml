@@ -1,0 +1,34 @@
+dynamic_reconfigure: no
+
+cv:
+  lane_lower: [0,0,0]
+  lane_upper: [180,40,255]
+  barrel_lower: [0,250,0]
+  barrel_upper: [180,255,255]
+  #  h_lower: 0
+  #  h_upper: 180
+  #  s_lower: 0
+  #  s_upper: 50
+  #  v_lower: 0
+  #  v_upper: 255
+  erosion_size: 2
+  erosion_iter: 1 #1
+  blur_size: 4 #3
+  upper_mask_percent: 50
+
+  publish_masked: yes
+
+
+lanes:
+  max_points: 10000
+  stride: 10
+  epsilon_dist: 0.35
+  max_vert_dist: 0.75
+  max_horiz_dist: 5.5
+  min_new_dist: 0.35
+  max_new_dist: 4.0
+  cos_max_new_angle: 0.9
+  cos_min_angle_reverse_point: 0.2
+
+
+

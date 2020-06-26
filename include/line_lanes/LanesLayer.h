@@ -1,5 +1,5 @@
-#ifndef IGVC_BOT_LANESLAYER_H
-#define IGVC_BOT_LANESLAYER_H
+#ifndef LINE_LANES_LANESLAYER_H
+#define LINE_LANES_LANESLAYER_H
 
 #include <ros/ros.h>
 #include <costmap_2d/layer.h>
@@ -10,7 +10,7 @@
 #include <vector>
 #include <mutex>
 
-#include <igvc_bot/Lane.h>
+#include <line_lanes/Lane.h>
 
 // Costmap Prohibition layer:
 // ref https://github.com/rst-tu-dortmund/costmap_prohibition_layer/blob/kinetic-devel/src/costmap_prohibition_layer.cpp
@@ -34,7 +34,7 @@ namespace lanes_layer {
         // Actually write the data to the costmap
         void updateCosts(costmap_2d::Costmap2D &master_grid, int min_i, int min_j, int max_i, int max_j) override;
 
-        void callback(const igvc_bot::Lane::ConstPtr &msg);
+        void callback(const line_lanes::Lane::ConstPtr &msg);
 
     private:
         ros::Subscriber _sub;
@@ -63,4 +63,4 @@ namespace lanes_layer {
 }
 
 
-#endif //IGVC_BOT_LANESLAYER_H
+#endif //LINE_LANES_LANESLAYER_H

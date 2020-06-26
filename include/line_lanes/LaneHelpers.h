@@ -1,8 +1,8 @@
-#ifndef IGVC_BOT_LANEHELPERS_H
-#define IGVC_BOT_LANEHELPERS_H
+#ifndef LINE_LANES_LANEHELPERS_H
+#define LINE_LANES_LANEHELPERS_H
 
 #include <ros/ros.h>
-#include <igvc_bot/Lane.h>
+#include <line_lanes/Lane.h>
 #include <sensor_msgs/PointCloud2.h>
 #include <sensor_msgs/point_cloud2_iterator.h>
 #include <mutex>
@@ -42,11 +42,11 @@ public:
 
 class LanePublisher {
     ros::Publisher _pub;
-    igvc_bot::Lane _lane;
+    line_lanes::Lane _lane;
     const size_t _num_to_keep;
 
 public:
-    igvc_bot::Lane::_header_type &header;
+    line_lanes::Lane::_header_type &header;
     std::vector<std::pair<double, double> > vertices;
 
     LanePublisher(const ros::Publisher &pub, const size_t &points_to_keep);
@@ -156,4 +156,4 @@ struct Helpers {
     Helpers(Publishers pubs) : pub(std::move(pubs)), mutex() {}
 };
 
-#endif //IGVC_BOT_LANEHELPERS_H
+#endif //LINE_LANES_LANEHELPERS_H

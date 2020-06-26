@@ -1,4 +1,4 @@
-#include "igvc_bot/LanesLayer.h"
+#include "line_lanes/LanesLayer.h"
 
 #include <pluginlib/class_list_macros.h>
 
@@ -121,7 +121,7 @@ namespace lanes_layer {
      * 2. The new points will be added to the vertices
      * 3. An entry in vertices_to_remove, i.e. old vertices which shall be erased.
      */
-    void LanesLayer::callback(const igvc_bot::Lane::ConstPtr &msg) {
+    void LanesLayer::callback(const line_lanes::Lane::ConstPtr &msg) {
         // The message consists of 2 things:
         // The offset and the points.
         // The offset specifies from what index the new points are to be updated.

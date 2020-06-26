@@ -1,0 +1,12 @@
+global_costmap:
+  rolling_window: false
+
+  plugins:
+    - {name: lanes_left, type: "lanes_layer::LanesLayer"}
+    - {name: lanes_right, type: "lanes_layer::LanesLayer"}
+
+  lanes_left:
+    topic: "/camera/left/lane/updates"
+
+  lanes_right:
+    topic: "/camera/right/lane/updates"

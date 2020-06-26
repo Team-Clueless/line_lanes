@@ -10,9 +10,9 @@
 #include <tf/transform_datatypes.h>
 
 #include <dynamic_reconfigure/server.h>
-#include <igvc_bot/LanesConfig.h>
+#include <line_lanes/LanesConfig.h>
 
-#include <igvc_bot/LaneHelpers.h>
+#include <line_lanes/LaneHelpers.h>
 
 const char *topic_image = "image_rect_color";
 const char *topic_camera_info = "camera_info";
@@ -397,7 +397,7 @@ void process_image(const cv_bridge::CvImageConstPtr &cv_img, std::vector<cv::Poi
 // This also auto loads any params initially set in the param server.
 // The the ros page for 'dynamic_reconfigure'
 //
-void dynamic_reconfigure_callback(const igvc_bot::LanesConfig &config, const uint32_t &level, Helpers &helper) {
+void dynamic_reconfigure_callback(const line_lanes::LanesConfig &config, const uint32_t &level, Helpers &helper) {
     std::lock_guard<std::mutex> lock(helper.mutex);
 
     if (level & 1u << 0u) {
@@ -429,7 +429,7 @@ int main(int argc, char **argv) {
     Helpers helper({
                            imageTransport.advertise(topic_masked, 1),
                            {nh.advertise<sensor_msgs::PointCloud2>(pc_topic, 2)},
-                           {nh.advertise<igvc_bot::Lane>(lane_topic, 10), num_sections}
+                           {nh.advertise<line_lanes::Lane>(lane_topic, 10), num_sections}
                    });
 
     sensor_msgs::CameraInfo::ConstPtr camera_info = ros::topic::waitForMessage<sensor_msgs::CameraInfo>(
@@ -457,8 +457,8 @@ int main(int argc, char **argv) {
 
     if (helper.dynamic_reconfigure) {
         // For the dynamic parameter reconfiguration. see the function dynamic_reconfigure_callback
-        dynamic_reconfigure::Server<igvc_bot::LanesConfig> server({"cv"});
-        dynamic_reconfigure::Server<igvc_bot::LanesConfig>::CallbackType dynamic_reconfigure_callback_function = boost::bind(
+        dynamic_reconfigure::Server<line_lanes::LanesConfig> server({"cv"});
+        dynamic_reconfigure::Server<line_lanes::LanesConfig>::CallbackType dynamic_reconfigure_callback_function = boost::bind(
                 &dynamic_reconfigure_callback, _1, _2, boost::ref(helper));
         server.setCallback(dynamic_reconfigure_callback_function);
     }
